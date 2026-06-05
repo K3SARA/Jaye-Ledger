@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import { 
   Sprout, 
   Plus, 
@@ -235,6 +236,21 @@ const formatLocalDate = () => new Date().toLocaleDateString();
 const formatLocalTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const formatInputDate = () => new Date().toISOString().slice(0, 10);
 
+const POS_ITEM_PRESETS = {
+  husk: {
+    itemType: 'husk',
+    itemDescription: 'Coconut Husk / හස්ක්',
+    itemUnit: 'kg'
+  },
+  coconut: {
+    itemType: 'coconut',
+    itemDescription: 'Coconuts / පොල්',
+    itemUnit: 'pcs'
+  }
+};
+
+const getPosItemPreset = (itemType = 'husk') => POS_ITEM_PRESETS[itemType] || POS_ITEM_PRESETS.husk;
+
 // Initial states
 const initialPOSState = {
   qty: '',
@@ -247,12 +263,12 @@ const initialPOSState = {
   phone: '',
   billNumber: '',
   date: formatInputDate(),
-  itemDescription: 'Coconut Husk / හස්ක්',
-  itemUnit: 'kg'
+  ...POS_ITEM_PRESETS.husk
 };
 
-const createPOSState = (type = 'purchase') => ({
+const createPOSState = (type = 'purchase', itemType = 'husk') => ({
   ...initialPOSState,
+  ...getPosItemPreset(itemType),
   type,
   date: formatInputDate()
 });
@@ -674,6 +690,12 @@ export default function App() {
   const parsedPosAdjustment = parseFloat(posBill.adjustment);
   const posAdjustment = hasPosAdjustment && Number.isFinite(parsedPosAdjustment) ? parsedPosAdjustment : 0;
   const posSettlement = featureSettings.settlement ? parseFloat(posBill.settlement) || 0 : 0;
+  const currentPosItemPreset = getPosItemPreset(posBill.itemType);
+  const isCoconutCalculator = currentPosItemPreset.itemType === 'coconut';
+  const posQtyLabel = isCoconutCalculator ? text('Coconut Quantity', 'පොල් ගෙඩි ගණන') : text('Husk Quantity', 'ලෙලි ප්‍රමාණය');
+  const posPriceLabel = isCoconutCalculator ? text('Price per Coconut (Rs.)', 'පොල් ගෙඩියක මිල (රු.)') : text('Price per kg (Rs.)', 'කිලෝවක මිල (රු.)');
+  const posItemDescription = posBill.itemDescription ? posBill.itemDescription.trim() : currentPosItemPreset.itemDescription;
+  const posItemUnit = posBill.itemUnit || currentPosItemPreset.itemUnit;
   
   let posNet = posGross;
   if (hasPosAdjustment) {
@@ -684,7 +706,7 @@ export default function App() {
 
   const isPaymentOnly = (!posBill.qty || posQty === 0) && posBill.name && posSettlement > 0;
   const mobileFieldLabels = {
-    qty: text('Qty', 'ගණන'),
+    qty: isCoconutCalculator ? text('Coco', 'පොල්') : text('Husk', 'ලෙලි'),
     price: text('Price', 'මිල'),
     adjustment: text('Adj', 'ගැලපුම්'),
     settlement: text('Debt', 'ණය')
@@ -704,6 +726,15 @@ export default function App() {
       ...prev,
       [field]: value
     }));
+  };
+
+  const switchPOSItemType = (itemType) => {
+    const preset = getPosItemPreset(itemType);
+    setPosBill(prev => ({
+      ...prev,
+      ...preset
+    }));
+    setMobileCalcField('qty');
   };
 
   const handleMobileNumberKey = (key) => {
@@ -729,7 +760,7 @@ export default function App() {
   };
 
   const handleMobileClearAll = () => {
-    setPosBill(createPOSState(posBill.type));
+    setPosBill(createPOSState(posBill.type, currentPosItemPreset.itemType));
     setMobileCalcField('qty');
   };
 
@@ -861,6 +892,228 @@ export default function App() {
     styleTag.textContent = `@media print { @page { margin: 0; size: 80mm ${pageHeightMm}mm; } }`;
   };
 
+  const shouldUseReceiptPrintPage = () => {
+    if (typeof window === 'undefined') return false;
+
+    return window.matchMedia('(max-width: 767px)').matches
+      || /Android|iPhone|iPad|iPod|Mobile/i.test(window.navigator.userAgent);
+  };
+
+  const openReceiptPrintPage = (asPdf = false) => {
+    const receipt = receiptRef.current;
+    if (!receipt || !currentPrintBill) return false;
+
+    setReceiptPageSize();
+    const receiptTitle = asPdf
+      ? `receipt-${currentPrintBill.billNumber || currentPrintBill.id || Date.now()}`
+      : 'Receipt';
+    const printWindow = window.open('', '_blank', 'width=420,height=720');
+    if (!printWindow) return false;
+
+    printWindow.opener = null;
+    printWindow.document.open();
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${receiptTitle}</title>
+          <style>
+            @page { margin: 0; size: 80mm auto; }
+            * { box-sizing: border-box; }
+            html, body {
+              margin: 0;
+              min-height: 100%;
+              background: #e2e8f0;
+              color: #000;
+              font-family: "Courier New", Courier, monospace;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .toolbar {
+              position: sticky;
+              top: 0;
+              z-index: 10;
+              display: flex;
+              gap: 8px;
+              justify-content: center;
+              padding: 12px;
+              background: #0f172a;
+            }
+            .toolbar button {
+              min-height: 44px;
+              border: 0;
+              border-radius: 8px;
+              padding: 0 16px;
+              background: #047857;
+              color: #fff;
+              font: 800 14px Arial, sans-serif;
+            }
+            .toolbar .close {
+              background: rgba(255, 255, 255, 0.14);
+            }
+            .receipt-shell {
+              width: 80mm;
+              margin: 0 auto;
+              padding: 4mm;
+              background: #fff;
+            }
+            .receipt-page {
+              width: 72mm;
+              max-width: 72mm;
+              margin: 0 auto;
+              padding: 3mm 0 5mm;
+              background: #fff;
+              color: #000;
+              font-family: "Courier New", Courier, monospace;
+              font-size: 10px;
+              font-weight: 400;
+              line-height: 1.25;
+              letter-spacing: 0;
+            }
+            .receipt-page * {
+              color: #000 !important;
+              background: transparent !important;
+              box-shadow: none !important;
+              text-shadow: none !important;
+              letter-spacing: 0 !important;
+              line-height: inherit !important;
+            }
+            .receipt-page h2 {
+              margin: 0 !important;
+              font-size: 15px !important;
+              line-height: 1.15 !important;
+              overflow-wrap: anywhere !important;
+            }
+            .receipt-page h3 {
+              margin: 0 !important;
+              font-size: 10px !important;
+              line-height: 1.2 !important;
+            }
+            .receipt-page p { margin: 0 !important; }
+            .receipt-page .mb-6 { margin-bottom: 4mm !important; }
+            .receipt-page .my-2 {
+              margin-top: 2mm !important;
+              margin-bottom: 2mm !important;
+            }
+            .receipt-page .my-3,
+            .receipt-page .my-4 {
+              margin-top: 3mm !important;
+              margin-bottom: 3mm !important;
+            }
+            .receipt-page .mt-6 { margin-top: 4mm !important; }
+            .receipt-page .space-y-1 > :not([hidden]) ~ :not([hidden]) {
+              margin-top: 1.1mm !important;
+            }
+            .receipt-page .flex.justify-between {
+              display: grid !important;
+              grid-template-columns: minmax(0, 1fr) max-content;
+              column-gap: 2mm;
+              align-items: start !important;
+              width: 100% !important;
+              break-inside: avoid !important;
+            }
+            .receipt-page .flex.justify-between > :first-child {
+              min-width: 0 !important;
+              overflow-wrap: anywhere !important;
+              word-break: normal !important;
+            }
+            .receipt-page .flex.justify-between > :last-child {
+              min-width: 0 !important;
+              max-width: 34mm !important;
+              text-align: right !important;
+              white-space: nowrap !important;
+              overflow-wrap: normal !important;
+            }
+            .receipt-page .font-bold,
+            .receipt-page .font-semibold,
+            .receipt-page .font-black {
+              font-weight: 700 !important;
+            }
+            .receipt-page .text-xs,
+            .receipt-page .text-\\[11px\\],
+            .receipt-page .text-\\[10px\\] {
+              font-size: 10px !important;
+            }
+            .receipt-page .receipt-business-title {
+              font-size: 15px !important;
+              line-height: 1.15 !important;
+              overflow-wrap: anywhere !important;
+            }
+            .receipt-page .receipt-business-line {
+              font-size: 11px !important;
+              line-height: 1.25 !important;
+              font-weight: 700 !important;
+              overflow-wrap: anywhere !important;
+            }
+            .receipt-page .receipt-item-row {
+              break-inside: avoid !important;
+            }
+            .receipt-page .receipt-item-name,
+            .receipt-page .receipt-item-meta {
+              font-size: 13px !important;
+              line-height: 1.25 !important;
+            }
+            .receipt-page .receipt-net-total.flex.justify-between {
+              grid-template-columns: minmax(0, 1fr) max-content !important;
+              column-gap: 1.5mm !important;
+              align-items: center !important;
+              padding: 2mm 0 !important;
+              border-top: 2px solid #000 !important;
+              border-bottom: 2px solid #000 !important;
+              font-size: 15px !important;
+              line-height: 1.2 !important;
+            }
+            .receipt-page .receipt-net-total.flex.justify-between > :last-child {
+              max-width: none !important;
+              font-size: 20px !important;
+              font-weight: 900 !important;
+            }
+            .receipt-page .receipt-footer {
+              font-size: 12px !important;
+              line-height: 1.25 !important;
+              font-weight: 700 !important;
+              overflow-wrap: anywhere !important;
+            }
+            .receipt-page .border-b { border-bottom: 1px solid #000 !important; }
+            .receipt-page .border-dashed { border-style: dashed !important; }
+            .receipt-page .text-center { text-align: center !important; }
+            .receipt-page .uppercase { text-transform: uppercase !important; }
+            @media print {
+              html, body {
+                width: 80mm;
+                min-width: 80mm;
+                max-width: 80mm;
+                background: #fff;
+              }
+              .toolbar { display: none !important; }
+              .receipt-shell {
+                width: 80mm;
+                margin: 0;
+                padding: 0 4mm;
+                background: #fff;
+              }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="toolbar">
+            <button type="button" onclick="window.print()">Print / Save PDF</button>
+            <button type="button" class="close" onclick="window.close()">Close</button>
+          </div>
+          <main class="receipt-shell">
+            <div class="receipt-page">${receipt.innerHTML}</div>
+          </main>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+    return true;
+  };
+
   const printReceipt = (bill, shouldRefocus = false) => {
     setCurrentPrintBill(bill);
     setReceiptPreviewRefocus(shouldRefocus);
@@ -869,22 +1122,29 @@ export default function App() {
 
   const handleReceiptOutput = (asPdf = false) => {
     if (!currentPrintBill) return;
+
+    if (shouldUseReceiptPrintPage() && openReceiptPrintPage(asPdf)) {
+      setShowReceiptPreview(false);
+      if (receiptPreviewRefocus) qtyInputRef.current?.focus();
+      return;
+    }
+
     const originalTitle = document.title;
     if (asPdf) {
       document.title = `receipt-${currentPrintBill.billNumber || currentPrintBill.id || Date.now()}`;
     }
 
-    setTimeout(() => {
-      setReceiptPageSize();
-      window.print();
+    const cleanupAfterPrint = () => {
       setShowReceiptPreview(false);
       if (receiptPreviewRefocus) qtyInputRef.current?.focus();
       if (asPdf) {
-        setTimeout(() => {
-          document.title = originalTitle;
-        }, 500);
+        document.title = originalTitle;
       }
-    }, 100);
+    };
+
+    window.addEventListener('afterprint', cleanupAfterPrint, { once: true });
+    setReceiptPageSize();
+    window.print();
   };
 
   const closeReceiptPreview = () => {
@@ -922,8 +1182,9 @@ export default function App() {
       date: posBill.date || formatLocalDate(),
       type: isPayment ? 'credit_settlement' : posBill.type,
       accountType: posBill.type,
-      itemDescription: posBill.itemDescription ? posBill.itemDescription.trim() : 'Coconut Husk / හස්ක්',
-      itemUnit: posBill.itemUnit || 'kg',
+      itemType: currentPosItemPreset.itemType,
+      itemDescription: posItemDescription,
+      itemUnit: posItemUnit,
       qty: isPayment ? 0 : posQty,
       price: isPayment ? 0 : posPrice,
       adjustment: posAdjustment,
@@ -938,8 +1199,8 @@ export default function App() {
       description: isPayment 
         ? (posBill.type === 'purchase' ? t('paymentMade') : t('paymentReceived'))
         : (posBill.type === 'purchase'
-            ? `${posBill.itemDescription || 'Coconut Husk / හස්ක්'} - ${t('supplierSupply')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`
-            : `${posBill.itemDescription || 'Coconut Husk / හස්ක්'} - ${t('customerPurchase')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`)
+            ? `${posItemDescription} - ${t('supplierSupply')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`
+            : `${posItemDescription} - ${t('customerPurchase')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`)
     };
 
     // Update active ledger
@@ -949,7 +1210,7 @@ export default function App() {
     }));
 
     // Clear and Refocus
-    setPosBill(createPOSState(posBill.type));
+    setPosBill(createPOSState(posBill.type, currentPosItemPreset.itemType));
     triggerNotification(t('successBill'));
     
     // Set timeout to let state update, then print, then refocus
@@ -1126,10 +1387,14 @@ export default function App() {
   const inventoryRows = Object.values(allLedgerTransactions
     .filter(tx => tx.type === 'purchase' || tx.type === 'sale')
     .reduce((items, tx) => {
-      const itemName = tx.itemDescription || 'Coconut Husk / හස්ක්';
-      if (!items[itemName]) {
-        items[itemName] = {
+      const txPreset = getPosItemPreset(tx.itemType);
+      const itemName = tx.itemDescription || txPreset.itemDescription;
+      const itemUnit = tx.itemUnit || txPreset.itemUnit;
+      const itemKey = `${itemName}__${itemUnit}`;
+      if (!items[itemKey]) {
+        items[itemKey] = {
           itemName,
+          itemUnit,
           purchasedQty: 0,
           soldQty: 0,
           purchaseValue: 0,
@@ -1140,11 +1405,11 @@ export default function App() {
       const qty = toAmount(tx.qty);
       const lineValue = qty * toAmount(tx.price);
       if (tx.type === 'purchase') {
-        items[itemName].purchasedQty += qty;
-        items[itemName].purchaseValue += lineValue;
+        items[itemKey].purchasedQty += qty;
+        items[itemKey].purchaseValue += lineValue;
       } else {
-        items[itemName].soldQty += qty;
-        items[itemName].saleValue += lineValue;
+        items[itemKey].soldQty += qty;
+        items[itemKey].saleValue += lineValue;
       }
       return items;
     }, {}))
@@ -1361,11 +1626,16 @@ export default function App() {
   };
 
   const printStatement = () => {
-    setStatementPrintType(appView);
-    setTimeout(() => {
-      window.print();
-      setTimeout(() => setStatementPrintType(null), 500);
-    }, 100);
+    flushSync(() => {
+      setStatementPrintType(appView);
+    });
+
+    const cleanupAfterPrint = () => {
+      setStatementPrintType(null);
+    };
+
+    window.addEventListener('afterprint', cleanupAfterPrint, { once: true });
+    window.print();
   };
 
   const renderTopNav = (title = 'Menu') => (
@@ -1514,12 +1784,12 @@ export default function App() {
                     </p>
                   </div>
                   <span className={item.stockQty >= 0 ? 'text-sm font-black text-emerald-600' : 'text-sm font-black text-rose-600'}>
-                    {item.stockQty.toLocaleString()} kg
+                    {item.stockQty.toLocaleString()} {item.itemUnit}
                   </span>
                 </div>
                 <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] font-bold">
-                  <span className="rounded-lg bg-slate-100 p-2 dark:bg-slate-850/50">{text('Bought', 'ගත්')}: {item.purchasedQty.toLocaleString()}</span>
-                  <span className="rounded-lg bg-slate-100 p-2 dark:bg-slate-850/50">{text('Sold', 'දුන්')}: {item.soldQty.toLocaleString()}</span>
+                  <span className="rounded-lg bg-slate-100 p-2 dark:bg-slate-850/50">{text('Bought', 'ගත්')}: {item.purchasedQty.toLocaleString()} {item.itemUnit}</span>
+                  <span className="rounded-lg bg-slate-100 p-2 dark:bg-slate-850/50">{text('Sold', 'දුන්')}: {item.soldQty.toLocaleString()} {item.itemUnit}</span>
                   <span className="rounded-lg bg-slate-100 p-2 dark:bg-slate-850/50">{text('Profit', 'ලාභය')}: {formatCurrency(item.profit)}</span>
                 </div>
               </div>
@@ -1578,7 +1848,7 @@ export default function App() {
           <div key={item.itemName} className="border-b border-dashed border-black/30 pb-1">
             <div className="flex justify-between font-bold">
               <span>{item.itemName}</span>
-              <span>{item.stockQty.toLocaleString()} kg</span>
+              <span>{item.stockQty.toLocaleString()} {item.itemUnit}</span>
             </div>
             <div className="flex justify-between">
               <span>Buy {formatCurrency(item.avgBuy)} / Sell {formatCurrency(item.avgSell)}</span>
@@ -1964,12 +2234,41 @@ export default function App() {
                   </button>
                 </div>
 
+                <div className="mt-2 grid grid-cols-2 gap-2 rounded-lg bg-slate-950/10 p-1 text-[11px] font-black">
+                  <button
+                    type="button"
+                    onClick={() => switchPOSItemType('husk')}
+                    aria-pressed={currentPosItemPreset.itemType === 'husk'}
+                    className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${
+                      currentPosItemPreset.itemType === 'husk'
+                        ? 'bg-violet-700 text-white shadow-sm'
+                        : 'bg-white/60 text-slate-700'
+                    }`}
+                  >
+                    <PackageOpen className="h-3.5 w-3.5" />
+                    <span>{text('Husks kg', 'ලෙලි kg')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchPOSItemType('coconut')}
+                    aria-pressed={currentPosItemPreset.itemType === 'coconut'}
+                    className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${
+                      currentPosItemPreset.itemType === 'coconut'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-white/60 text-slate-700'
+                    }`}
+                  >
+                    <Sprout className="h-3.5 w-3.5" />
+                    <span>{text('Coconuts pcs', 'පොල් pcs')}</span>
+                  </button>
+                </div>
+
                 <div className="mt-2 grid grid-cols-[minmax(0,1fr)_8.5rem] gap-2">
                   <input
                     type="text"
                     value={posBill.itemDescription}
                     onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
-                    placeholder={text('Item', 'අයිතමය')}
+                    placeholder={currentPosItemPreset.itemDescription}
                     className="min-w-0 rounded-lg border border-slate-300 bg-white/80 px-3 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-violet-600"
                   />
                   <input
@@ -1998,7 +2297,7 @@ export default function App() {
                     {formatCurrency(posNet)}
                   </div>
                   <div className="mt-0.5 text-[11px] font-bold text-slate-600">
-                    {posQty.toLocaleString()} x {formatCurrency(posPrice)}
+                    {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)}
                     {hasPosAdjustment ? ` / ${posBill.balanceType === 'add' ? '+' : '-'} ${formatCurrency(posAdjustment)}` : ''}
                   </div>
                 </div>
@@ -2147,6 +2446,40 @@ export default function App() {
                   </div>
 
                   <div className="order-1 grid grid-cols-2 gap-4 lg:grid-cols-4">
+                    <div className="col-span-2 lg:col-span-4">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                        {text('Calculator Item', 'ගණනය කරන අයිතමය')}
+                      </label>
+                      <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-1 text-sm font-black dark:border-slate-800 dark:bg-slate-950">
+                        <button
+                          type="button"
+                          onClick={() => switchPOSItemType('husk')}
+                          aria-pressed={currentPosItemPreset.itemType === 'husk'}
+                          className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${
+                            currentPosItemPreset.itemType === 'husk'
+                              ? 'bg-violet-700 text-white shadow-sm'
+                              : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
+                          }`}
+                        >
+                          <PackageOpen className="h-4 w-4" />
+                          <span>{text('Coconut Husks / kg', 'පොල් ලෙලි / kg')}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => switchPOSItemType('coconut')}
+                          aria-pressed={currentPosItemPreset.itemType === 'coconut'}
+                          className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${
+                            currentPosItemPreset.itemType === 'coconut'
+                              ? 'bg-emerald-600 text-white shadow-sm'
+                              : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
+                          }`}
+                        >
+                          <Sprout className="h-4 w-4" />
+                          <span>{text('Coconuts / pcs', 'පොල් / pcs')}</span>
+                        </button>
+                      </div>
+                    </div>
+
                     <div>
                       <label htmlFor="pos-date" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
                         {text('Date', 'දිනය')}
@@ -2170,7 +2503,7 @@ export default function App() {
                         value={posBill.itemDescription}
                         onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
                         onKeyDown={handlePOSKeyDown}
-                        placeholder="Coconut Husk / හස්ක්"
+                        placeholder={currentPosItemPreset.itemDescription}
                         className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
                       />
                     </div>
@@ -2178,7 +2511,7 @@ export default function App() {
                     {/* Quantity Input */}
                     <div>
                       <label htmlFor="pos-qty" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {t('qty')}
+                        {posQtyLabel}
                       </label>
                       <input
                         id="pos-qty"
@@ -2196,7 +2529,7 @@ export default function App() {
                     {/* Unit Price Input */}
                     <div>
                       <label htmlFor="pos-price" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {t('unitPrice')}
+                        {posPriceLabel}
                       </label>
                       <input
                         id="pos-price"
@@ -2380,7 +2713,7 @@ export default function App() {
                         {t('formula')}
                       </span>
                       <span className="mt-1 block font-bold text-base text-slate-900 dark:text-slate-100">
-                        {posQty.toLocaleString()} x {formatCurrency(posPrice)} = {formatCurrency(posGross)}
+                        {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)} = {formatCurrency(posGross)}
                       </span>
                     </div>
 
