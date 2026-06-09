@@ -1,0 +1,11 @@
+{
+  "appId": "com.ledgersimple.billing",
+  "appName": "Jayalal coco",
+  "webDir": "dist",
+  "android": {
+    "adjustMarginsForEdgeToEdge": "auto"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

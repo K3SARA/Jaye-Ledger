@@ -1,21 +1,22 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
-import { 
-  Sprout, 
-  Plus, 
-  Trash2, 
+import { isNativeThermalPrinterAvailable, listNativeBluetoothPrinters, printNativeText } from './nativePrinter';
+import {
+  Sprout,
+  Plus,
+  Trash2,
   ShoppingCart,
-  Printer, 
-  BookOpen, 
+  Printer,
+  BookOpen,
   LayoutDashboard,
   ClipboardList,
   HelpCircle,
   Info,
   Search,
-  RotateCcw, 
-  AlertTriangle, 
-  Moon, 
-  Sun, 
+  RotateCcw,
+  AlertTriangle,
+  Moon,
+  Sun,
   CheckCircle,
   Archive,
   ArrowDownLeft,
@@ -33,7 +34,7 @@ import {
 
 const TRANSLATIONS = {
   en: {
-    title: "Jaye Coco Ledger",
+    title: "Jayalal coco",
     subtitle: "Simple Billing & Accounting",
     historyLogs: "History Logs",
     calculatorTitle: "Calculator & Bill Maker",
@@ -128,7 +129,7 @@ const TRANSLATIONS = {
     manualIncomeDesc: "manual income"
   },
   si: {
-    title: "ජය කෝකෝ ලෙජරය",
+    title: "Jayalal coco",
     subtitle: "පොල් බෙදාහැරීම් සහ ගිණුම්කරණ ලෙජරය",
     historyLogs: "ඉතිහාස සටහන්",
     calculatorTitle: "කැල්කියුලේටරය සහ බිල්පත් සාදන්නා",
@@ -305,13 +306,79 @@ const defaultFeatureSettings = {
   creditLedger: true
 };
 
-const defaultReceiptSettings = {
-  businessTitle: 'JAYE COCO DISTRIBUTION',
+const oldDefaultReceiptSettings = {
   address: 'Simple Billing & Accounting',
   phone1: '077 1234567',
   phone2: '071 9876543',
-  phone3: '',
-  footerMessage: 'Thank you!'
+  phone3: ''
+};
+
+const defaultReceiptSettings = {
+  businessTitle: 'JAYE COCO DISTRIBUTION',
+  address: 'HEMUDAWA\nSADALANKAWA',
+  phone1: '031-2297165',
+  phone2: '0766184030',
+  phone3: '0782718584',
+  phone4: '0716184030',
+  footerMessage: 'Thank you!',
+  printerConnection: 'bluetooth',
+  printerPaperWidth: '80',
+  printerBluetoothAddress: '',
+  printerBluetoothName: '',
+  printerIpAddress: '',
+  printerIpPort: '9100',
+  printerEncoding: 'UTF-8',
+  printerCutPaper: false
+};
+
+const BILL_FOOTER_TEXT = 'Powered by J&co.';
+const RECEIPT_LABELS = {
+  dateTime: 'දිනය/වේලාව',
+  refId: 'Ref ID',
+  billNo: 'බිල් අංකය',
+  type: 'වර්ගය',
+  supplier: 'සැපයුම්කරුගේ නම',
+  customer: 'පාරිභෝගිකයාගේ නම',
+  phone: 'දුරකථන',
+  purchase: 'ගැනුම්',
+  sale: 'විකුණුම්',
+  debtSettlement: 'ණය අඩු කිරීම',
+  grossTotal: 'මුළු එකතුව',
+  netTotal: 'ශුද්ධ එකතුව',
+  previousBalance: 'කලින් හිඟය',
+  advance: 'අත්තිකාරම්'
+};
+
+const getReceiptTitle = (bill) => `receipt-${bill?.billNumber || bill?.id || 'bill'}`;
+
+const getDocumentTitle = () => (typeof document === 'undefined' ? '' : document.title);
+
+const setDocumentTitle = (title) => {
+  if (typeof document !== 'undefined') {
+    document.title = title;
+  }
+};
+
+const withReceiptDefaults = (settings = {}) => {
+  const merged = { ...defaultReceiptSettings, ...settings };
+
+  if (!settings.address || settings.address === oldDefaultReceiptSettings.address) {
+    merged.address = defaultReceiptSettings.address;
+  }
+  if (!settings.phone1 || settings.phone1 === oldDefaultReceiptSettings.phone1) {
+    merged.phone1 = defaultReceiptSettings.phone1;
+  }
+  if (!settings.phone2 || settings.phone2 === oldDefaultReceiptSettings.phone2) {
+    merged.phone2 = defaultReceiptSettings.phone2;
+  }
+  if (!settings.phone3 || settings.phone3 === oldDefaultReceiptSettings.phone3) {
+    merged.phone3 = defaultReceiptSettings.phone3;
+  }
+  if (!settings.phone4) {
+    merged.phone4 = defaultReceiptSettings.phone4;
+  }
+
+  return merged;
 };
 
 const createLedgerPage = () => ({
@@ -328,6 +395,116 @@ const createHuskLedgerPage = () => ({
 });
 
 const API_STATE_URL = '/api/state';
+
+const stripThermalControlChars = (value) => Array.from(String(value ?? ''))
+  .filter((char) => {
+    const code = char.charCodeAt(0);
+    return !(
+      code <= 8
+      || code === 11
+      || code === 12
+      || (code >= 14 && code <= 31)
+      || code === 127
+    );
+  })
+  .join('');
+
+const cleanThermalText = (value) => stripThermalControlChars(value)
+  .replace(/[^\S\r\n\t]+/g, ' ')
+  .replace(/\s*\/\s*$/, '')
+  .trim();
+
+const formatBillNumber = (value) => {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return '';
+  return /^\d+$/.test(trimmed) ? trimmed.padStart(6, '0') : trimmed;
+};
+
+const formatSimpleReceiptNumber = (value) => {
+  const num = parseFloat(value);
+  if (Number.isNaN(num)) return '0';
+
+  return Number.isInteger(num)
+    ? num.toLocaleString('en-US', { maximumFractionDigits: 0 })
+    : num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+const formatReceiptQtyRate = (bill) => (
+  `${formatSimpleReceiptNumber(bill?.qty)} x ${formatSimpleReceiptNumber(bill?.price)}`
+);
+
+const getReceiptAccountType = (bill) => bill?.accountType || bill?.type;
+
+const getReceiptTypeLabel = (bill) => {
+  if (bill?.type === 'credit_settlement') return RECEIPT_LABELS.debtSettlement;
+  return getReceiptAccountType(bill) === 'purchase' ? RECEIPT_LABELS.purchase : RECEIPT_LABELS.sale;
+};
+
+const getReceiptNameLabel = (bill) => (
+  getReceiptAccountType(bill) === 'purchase' ? RECEIPT_LABELS.supplier : RECEIPT_LABELS.customer
+);
+
+const receiptSeparator = (columns, char = '-') => char.repeat(columns);
+
+const centerReceiptLine = (value, columns) => {
+  const line = cleanThermalText(value);
+  if (!line) return '';
+  if (line.length >= columns) return line.slice(0, columns);
+  const leftPad = Math.floor((columns - line.length) / 2);
+  return `${' '.repeat(leftPad)}${line}`;
+};
+
+const wrapReceiptText = (value, columns) => {
+  const textValue = cleanThermalText(value);
+  if (!textValue) return [];
+
+  const lines = [];
+  let current = '';
+
+  textValue.split(' ').forEach((word) => {
+    if (!word) return;
+
+    if (word.length > columns) {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+      for (let index = 0; index < word.length; index += columns) {
+        lines.push(word.slice(index, index + columns));
+      }
+      return;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= columns) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  });
+
+  if (current) lines.push(current);
+  return lines;
+};
+
+const keyValueReceiptLines = (label, value, columns) => {
+  const left = cleanThermalText(label);
+  const right = cleanThermalText(value);
+  if (!left && !right) return [];
+  if (!right) return wrapReceiptText(left, columns);
+
+  const gap = columns - left.length - right.length;
+
+  if (gap >= 1) {
+    return [`${left}${' '.repeat(gap)}${right}`];
+  }
+
+  return [
+    ...wrapReceiptText(left, columns),
+    ...wrapReceiptText(right, Math.max(1, columns - 2)).map(line => `  ${line}`)
+  ];
+};
 
 export default function App() {
 
@@ -379,8 +556,10 @@ export default function App() {
   });
   const [receiptSettings, setReceiptSettings] = useState(() => {
     const saved = localStorage.getItem('receiptSettings');
-    return saved ? { ...defaultReceiptSettings, ...JSON.parse(saved) } : defaultReceiptSettings;
+    return saved ? withReceiptDefaults(JSON.parse(saved)) : defaultReceiptSettings;
   });
+  const [pairedPrinters, setPairedPrinters] = useState([]);
+  const [printerLookupBusy, setPrinterLookupBusy] = useState(false);
   const [huskForm, setHuskForm] = useState(initialHuskState);
   const [activeHuskLedger, setActiveHuskLedger] = useState(() => {
     const saved = localStorage.getItem('activeHuskLedger');
@@ -394,6 +573,18 @@ export default function App() {
   const [editTxForm, setEditTxForm] = useState(null);
   const [archiveAdjustmentDrafts, setArchiveAdjustmentDrafts] = useState({});
   const [mobileCalcField, setMobileCalcField] = useState('qty');
+
+  // Loan Register inputs
+  const [loanFormName, setLoanFormName] = useState('');
+  const [loanFormType, setLoanFormType] = useState('sale'); // sale = Customer, purchase = Supplier
+  const [loanFormAction, setLoanFormAction] = useState('give'); // give = cash payout/loan, receive = cash received/settlement
+  const [loanFormAmount, setLoanFormAmount] = useState('');
+  const [loanFormDate, setLoanFormDate] = useState(formatInputDate());
+  const [loanFormDescription, setLoanFormDescription] = useState('');
+  const [loanSearchQuery, setLoanSearchQuery] = useState('');
+  const [loanSelectedFilter, setLoanSelectedFilter] = useState('all');
+  const [loanSelectedParty, setLoanSelectedParty] = useState(null); // { name, type } for history detail view
+  const [showLoanNameSuggestions, setShowLoanNameSuggestions] = useState(false);
 
   // Manual entry inputs
   const [manualType, setManualType] = useState('stock'); // stock, expense, income
@@ -462,7 +653,7 @@ export default function App() {
       setFeatureSettings({ ...defaultFeatureSettings, ...state.featureSettings });
     }
     if (state.receiptSettings) {
-      setReceiptSettings({ ...defaultReceiptSettings, ...state.receiptSettings });
+      setReceiptSettings(withReceiptDefaults(state.receiptSettings));
     }
     if (state.activeHuskLedger) {
       setActiveHuskLedger({ ...createHuskLedgerPage(), ...state.activeHuskLedger });
@@ -597,6 +788,19 @@ export default function App() {
   const isBillLike = (tx) => tx.type === 'purchase' || tx.type === 'sale' || tx.type === 'credit_settlement';
   const txAccountType = (tx) => tx.accountType || tx.type;
   const getSettlement = (tx) => parseFloat(tx.settlementAmount) || 0;
+  const getNextBillNumber = () => {
+    const ledgers = [activeLedger, ...archivedLedgers];
+    const highest = ledgers.reduce((max, ledger) => {
+      const transactions = Array.isArray(ledger?.transactions) ? ledger.transactions : [];
+      return transactions.reduce((txMax, tx) => {
+        const billNumber = String(tx.billNumber || '').trim();
+        if (!/^\d+$/.test(billNumber)) return txMax;
+        return Math.max(txMax, parseInt(billNumber, 10) || 0);
+      }, max);
+    }, 0);
+
+    return formatBillNumber(String(highest + 1));
+  };
   const getCreditDelta = (tx) => {
     if (!tx.name || !isBillLike(tx)) return 0;
     if (typeof tx.creditDelta === 'number') return tx.creditDelta;
@@ -696,15 +900,15 @@ export default function App() {
   const posPriceLabel = isCoconutCalculator ? text('Price per Coconut (Rs.)', 'පොල් ගෙඩියක මිල (රු.)') : text('Price per kg (Rs.)', 'කිලෝවක මිල (රු.)');
   const posItemDescription = posBill.itemDescription ? posBill.itemDescription.trim() : currentPosItemPreset.itemDescription;
   const posItemUnit = posBill.itemUnit || currentPosItemPreset.itemUnit;
-  
+
   let posNet = posGross;
   if (hasPosAdjustment) {
-    posNet = posBill.balanceType === 'add' 
-      ? posGross + posAdjustment 
-      : posGross - posAdjustment;
+    posNet = posGross - posAdjustment;
   }
 
-  const isPaymentOnly = (!posBill.qty || posQty === 0) && posBill.name && posSettlement > 0;
+  const isPaymentOnly = (!posBill.qty || posQty === 0) && posBill.name && (posSettlement > 0 || posAdjustment > 0);
+  const posSettlementAmount = isPaymentOnly && posAdjustment > 0 ? posAdjustment : posSettlement;
+
   const mobileFieldLabels = {
     qty: isCoconutCalculator ? text('Coco', 'පොල්') : text('Husk', 'ලෙලි'),
     price: text('Price', 'මිල'),
@@ -805,7 +1009,9 @@ export default function App() {
   };
 
   const outstanding = getCustomerOutstanding(posBill.name, posBill.type);
-  const remainingOutstanding = posBill.name ? outstanding + (isPaymentOnly ? 0 : posNet) - posSettlement : 0;
+  const remainingOutstanding = posBill.name
+    ? outstanding + (isPaymentOnly ? -posSettlementAmount : posNet - posSettlementAmount - posAdjustment)
+    : 0;
 
   const partyBalances = getUniqueNames('sale').map(name => ({
     name,
@@ -866,11 +1072,141 @@ export default function App() {
 
   const receiptBusinessTitle = String(receiptSettings.businessTitle || defaultReceiptSettings.businessTitle).trim();
   const receiptAddress = String(receiptSettings.address || '').trim();
-  const receiptPhones = [receiptSettings.phone1, receiptSettings.phone2, receiptSettings.phone3]
+  const receiptAddressLines = receiptAddress
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+  const receiptPhones = [receiptSettings.phone1, receiptSettings.phone2, receiptSettings.phone3, receiptSettings.phone4]
     .map(phone => String(phone || '').trim())
     .filter(Boolean)
-    .slice(0, 3);
+    .slice(0, 4);
+  const receiptMobileLines = receiptPhones.length > 0
+    ? [
+      `${RECEIPT_LABELS.phone}: ${receiptPhones[0]}`,
+      ...receiptPhones.slice(1).reduce((rows, phone, index) => {
+        if (index % 2 === 0) rows.push(phone);
+        else rows[rows.length - 1] = `${rows[rows.length - 1]} / ${phone}`;
+        return rows;
+      }, [])
+    ]
+    : [];
   const receiptFooterMessage = String(receiptSettings.footerMessage || '').trim();
+  const receiptPaperWidth = String(receiptSettings.printerPaperWidth || '80');
+  const receiptColumns = receiptPaperWidth === '58' ? 32 : 48;
+
+  const buildNativeReceiptText = (bill) => {
+    const lines = [];
+    const push = (line = '') => lines.push(line);
+    const pushWrapped = (value) => wrapReceiptText(value, receiptColumns).forEach(push);
+    const pushCenter = (value) => {
+      wrapReceiptText(value, receiptColumns).forEach(line => push(centerReceiptLine(line, receiptColumns)));
+    };
+    const pushKeyValue = (label, value) => keyValueReceiptLines(label, value, receiptColumns).forEach(push);
+    const billNo = formatBillNumber(bill.billNumber);
+    const billTypeTitle = getReceiptTypeLabel(bill);
+    const grossTotal = (parseFloat(bill.qty) || 0) * (parseFloat(bill.price) || 0);
+    const netTotal = bill.type === 'credit_settlement' ? getSettlement(bill) : parseFloat(bill.netAmount) || 0;
+
+    pushCenter(receiptBusinessTitle.toUpperCase());
+    receiptAddressLines.forEach(pushCenter);
+    receiptMobileLines.forEach(pushCenter);
+    push(receiptSeparator(receiptColumns));
+    pushCenter(billTypeTitle);
+    push(receiptSeparator(receiptColumns));
+    pushKeyValue(`${RECEIPT_LABELS.dateTime}:`, `${bill.date || ''} ${bill.time || ''}`);
+    if (billNo) pushKeyValue(`${RECEIPT_LABELS.billNo}:`, billNo);
+    pushKeyValue(`${RECEIPT_LABELS.type}:`, billTypeTitle);
+
+    if (bill.name) {
+      pushWrapped(`${getReceiptNameLabel(bill)}: ${String(bill.name).trim()}`);
+    }
+    if (bill.phone) pushKeyValue(`${RECEIPT_LABELS.phone}:`, bill.phone);
+
+    push(receiptSeparator(receiptColumns));
+
+    if ((parseFloat(bill.qty) || 0) > 0) {
+      pushKeyValue(bill.itemDescription || 'Coconut', formatCurrency(grossTotal));
+      pushWrapped(formatReceiptQtyRate(bill));
+      push(receiptSeparator(receiptColumns, '-'));
+      pushKeyValue(`${RECEIPT_LABELS.grossTotal}:`, formatCurrency(grossTotal));
+    }
+
+    if ((parseFloat(bill.adjustment) || 0) > 0) {
+      pushKeyValue(
+        bill.adjustmentType === 'add' ? `${RECEIPT_LABELS.previousBalance}:` : `${RECEIPT_LABELS.advance}:`,
+        formatCurrency(bill.adjustment)
+      );
+    }
+
+    if (getSettlement(bill) > 0) {
+      pushKeyValue(`${RECEIPT_LABELS.debtSettlement}:`, formatCurrency(getSettlement(bill)));
+    }
+
+    push(receiptSeparator(receiptColumns));
+    pushKeyValue(`${RECEIPT_LABELS.netTotal}:`, formatCurrency(netTotal));
+    push(receiptSeparator(receiptColumns));
+    if (receiptFooterMessage) {
+      push('');
+      pushCenter(receiptFooterMessage);
+    }
+    pushCenter(BILL_FOOTER_TEXT);
+
+    return `${lines.join('\n')}\n`;
+  };
+
+  const loadPairedPrinters = async () => {
+    if (!isNativeThermalPrinterAvailable()) {
+      triggerNotification('Open the Android app to load paired printers.', 'error');
+      return;
+    }
+
+    setPrinterLookupBusy(true);
+    try {
+      const result = await listNativeBluetoothPrinters();
+      const printers = Array.isArray(result?.printers) ? result.printers : [];
+      setPairedPrinters(printers);
+      triggerNotification(printers.length ? 'Paired printers loaded' : 'No paired Bluetooth printers found', printers.length ? 'success' : 'error');
+    } catch (error) {
+      triggerNotification(error?.message || 'Could not load paired printers', 'error');
+    } finally {
+      setPrinterLookupBusy(false);
+    }
+  };
+
+  const printReceiptNatively = async (bill) => {
+    const connection = receiptSettings.printerConnection || 'bluetooth';
+    const payload = {
+      connection,
+      text: buildNativeReceiptText(bill),
+      paperWidth: parseInt(receiptPaperWidth, 10) || 80,
+      encoding: receiptSettings.printerEncoding || 'UTF-8',
+      raster: true,
+      rasterFontSize: receiptPaperWidth === '58' ? 21 : 24,
+      feedLines: 4,
+      chunkSize: 512,
+      chunkDelayMs: 8,
+      closeDelayMs: 500,
+      cut: Boolean(receiptSettings.printerCutPaper)
+    };
+
+    if (connection === 'bluetooth') {
+      const address = String(receiptSettings.printerBluetoothAddress || '').trim();
+      if (!address) {
+        throw new Error('Select a paired Bluetooth printer in settings.');
+      }
+      payload.address = address;
+    } else {
+      const host = String(receiptSettings.printerIpAddress || '').trim();
+      const port = parseInt(receiptSettings.printerIpPort, 10) || 9100;
+      if (!host) {
+        throw new Error('Enter the printer IP address in settings.');
+      }
+      payload.host = host;
+      payload.port = port;
+    }
+
+    return printNativeText(payload);
+  };
 
   const setReceiptPageSize = () => {
     const receipt = receiptRef.current;
@@ -905,7 +1241,7 @@ export default function App() {
 
     setReceiptPageSize();
     const receiptTitle = asPdf
-      ? `receipt-${currentPrintBill.billNumber || currentPrintBill.id || Date.now()}`
+      ? getReceiptTitle(currentPrintBill)
       : 'Receipt';
     const printWindow = window.open('', '_blank', 'width=420,height=720');
     if (!printWindow) return false;
@@ -927,7 +1263,7 @@ export default function App() {
               min-height: 100%;
               background: #e2e8f0;
               color: #000;
-              font-family: "Courier New", Courier, monospace;
+              font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", Arial, sans-serif;
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
             }
@@ -966,10 +1302,10 @@ export default function App() {
               padding: 3mm 0 5mm;
               background: #fff;
               color: #000;
-              font-family: "Courier New", Courier, monospace;
-              font-size: 10px;
+              font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", Arial, sans-serif;
+              font-size: 14px;
               font-weight: 400;
-              line-height: 1.25;
+              line-height: 1.28;
               letter-spacing: 0;
             }
             .receipt-page * {
@@ -982,13 +1318,13 @@ export default function App() {
             }
             .receipt-page h2 {
               margin: 0 !important;
-              font-size: 15px !important;
+              font-size: 16px !important;
               line-height: 1.15 !important;
               overflow-wrap: anywhere !important;
             }
             .receipt-page h3 {
               margin: 0 !important;
-              font-size: 10px !important;
+              font-size: 14px !important;
               line-height: 1.2 !important;
             }
             .receipt-page p { margin: 0 !important; }
@@ -1021,7 +1357,7 @@ export default function App() {
             }
             .receipt-page .flex.justify-between > :last-child {
               min-width: 0 !important;
-              max-width: 34mm !important;
+              max-width: 45mm !important;
               text-align: right !important;
               white-space: nowrap !important;
               overflow-wrap: normal !important;
@@ -1034,15 +1370,15 @@ export default function App() {
             .receipt-page .text-xs,
             .receipt-page .text-\\[11px\\],
             .receipt-page .text-\\[10px\\] {
-              font-size: 10px !important;
+              font-size: 13px !important;
             }
             .receipt-page .receipt-business-title {
-              font-size: 15px !important;
+              font-size: 16px !important;
               line-height: 1.15 !important;
               overflow-wrap: anywhere !important;
             }
             .receipt-page .receipt-business-line {
-              font-size: 11px !important;
+              font-size: 12.5px !important;
               line-height: 1.25 !important;
               font-weight: 700 !important;
               overflow-wrap: anywhere !important;
@@ -1052,7 +1388,7 @@ export default function App() {
             }
             .receipt-page .receipt-item-name,
             .receipt-page .receipt-item-meta {
-              font-size: 13px !important;
+              font-size: 14px !important;
               line-height: 1.25 !important;
             }
             .receipt-page .receipt-net-total.flex.justify-between {
@@ -1062,7 +1398,7 @@ export default function App() {
               padding: 2mm 0 !important;
               border-top: 2px solid #000 !important;
               border-bottom: 2px solid #000 !important;
-              font-size: 15px !important;
+              font-size: 16px !important;
               line-height: 1.2 !important;
             }
             .receipt-page .receipt-net-total.flex.justify-between > :last-child {
@@ -1071,7 +1407,7 @@ export default function App() {
               font-weight: 900 !important;
             }
             .receipt-page .receipt-footer {
-              font-size: 12px !important;
+              font-size: 13px !important;
               line-height: 1.25 !important;
               font-weight: 700 !important;
               overflow-wrap: anywhere !important;
@@ -1120,8 +1456,21 @@ export default function App() {
     setShowReceiptPreview(true);
   };
 
-  const handleReceiptOutput = (asPdf = false) => {
+  const handleReceiptOutput = async (asPdf = false) => {
     if (!currentPrintBill) return;
+
+    if (!asPdf && isNativeThermalPrinterAvailable()) {
+      try {
+        await printReceiptNatively(currentPrintBill);
+        setShowReceiptPreview(false);
+        if (receiptPreviewRefocus) qtyInputRef.current?.focus();
+        triggerNotification('Receipt sent to printer');
+        return;
+      } catch (error) {
+        triggerNotification(error?.message || 'Native print failed', 'error');
+        return;
+      }
+    }
 
     if (shouldUseReceiptPrintPage() && openReceiptPrintPage(asPdf)) {
       setShowReceiptPreview(false);
@@ -1129,16 +1478,16 @@ export default function App() {
       return;
     }
 
-    const originalTitle = document.title;
+    const originalTitle = getDocumentTitle();
     if (asPdf) {
-      document.title = `receipt-${currentPrintBill.billNumber || currentPrintBill.id || Date.now()}`;
+      setDocumentTitle(getReceiptTitle(currentPrintBill));
     }
 
     const cleanupAfterPrint = () => {
       setShowReceiptPreview(false);
       if (receiptPreviewRefocus) qtyInputRef.current?.focus();
       if (asPdf) {
-        document.title = originalTitle;
+        setDocumentTitle(originalTitle);
       }
     };
 
@@ -1152,9 +1501,9 @@ export default function App() {
     if (receiptPreviewRefocus) qtyInputRef.current?.focus();
   };
 
-  // Handle Print and Commit of POS Bill
   const handlePrintAndCommit = () => {
     const isPayment = isPaymentOnly;
+    const actualSettlement = isPayment ? posSettlementAmount : posSettlement;
 
     if (!isPayment) {
       if (!posBill.qty || posQty <= 0) {
@@ -1168,14 +1517,16 @@ export default function App() {
         return;
       }
     } else {
-      if (!posSettlement || posSettlement <= 0) {
-        triggerNotification(t('errExpenseAmt'), 'error');
-        adjustmentInputRef.current?.focus();
+      if (!actualSettlement || actualSettlement <= 0) {
+        triggerNotification(text('Enter payment amount or adjustment to log a payment', 'ගෙවීම් මුදල ඇතුළත් කරන්න'), 'error');
+        if (adjustmentInputRef.current) adjustmentInputRef.current.focus();
         return;
       }
     }
 
     const transactionId = createId('tx');
+    const enteredBillNumber = formatBillNumber(posBill.billNumber);
+    const normalizedBillNumber = featureSettings.billNumber ? (enteredBillNumber || getNextBillNumber()) : '';
     const newTransaction = {
       id: transactionId,
       time: formatLocalTime(),
@@ -1188,19 +1539,19 @@ export default function App() {
       qty: isPayment ? 0 : posQty,
       price: isPayment ? 0 : posPrice,
       adjustment: posAdjustment,
-      adjustmentType: featureSettings.adjustments ? posBill.balanceType : 'none',
+      adjustmentType: featureSettings.adjustments ? 'subtract' : 'none',
       netAmount: isPayment ? 0 : posNet,
-      settlementAmount: posSettlement,
-      creditDelta: isPayment ? -posSettlement : posNet - posSettlement,
+      settlementAmount: actualSettlement,
+      creditDelta: isPayment ? -actualSettlement : posNet - actualSettlement - posAdjustment,
       committed: true,
       name: posBill.name ? posBill.name.trim() : '',
       phone: featureSettings.phone && posBill.phone ? posBill.phone.trim() : '',
-      billNumber: featureSettings.billNumber && posBill.billNumber ? posBill.billNumber.trim() : '',
-      description: isPayment 
+      billNumber: normalizedBillNumber,
+      description: isPayment
         ? (posBill.type === 'purchase' ? t('paymentMade') : t('paymentReceived'))
         : (posBill.type === 'purchase'
-            ? `${posItemDescription} - ${t('supplierSupply')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`
-            : `${posItemDescription} - ${t('customerPurchase')}${posBill.billNumber ? ` (${posBill.billNumber})` : ''}`)
+          ? `${posItemDescription} - ${t('supplierSupply')}${normalizedBillNumber ? ` (${normalizedBillNumber})` : ''}`
+          : `${posItemDescription} - ${t('customerPurchase')}${normalizedBillNumber ? ` (${normalizedBillNumber})` : ''}`)
     };
 
     // Update active ledger
@@ -1212,7 +1563,7 @@ export default function App() {
     // Clear and Refocus
     setPosBill(createPOSState(posBill.type, currentPosItemPreset.itemType));
     triggerNotification(t('successBill'));
-    
+
     // Set timeout to let state update, then print, then refocus
     printReceipt(newTransaction, true);
   };
@@ -1224,7 +1575,7 @@ export default function App() {
     if (manualType === 'stock') {
       const qty = parseInt(manualStockQty) || 0;
       const laborCostPerPiece = parseFloat(manualStockLabor) || 0;
-      
+
       if (qty <= 0) {
         triggerNotification(t('errQty'), 'error');
         return;
@@ -1442,7 +1793,7 @@ export default function App() {
 
     // Save to history and reset active
     setArchivedLedgers(prev => [closedLedger, ...prev]);
-    
+
     setActiveLedger(createLedgerPage());
     setCoProducts({ huskType1: '', huskType2: '' });
     setShowResetConfirm(false);
@@ -1480,11 +1831,12 @@ export default function App() {
         const settlementAmount = featureSettings.settlement ? toAmount(editTxForm.settlementAmount) : 0;
         const isPayment = tx.type === 'credit_settlement' || qty <= 0;
         const gross = qty * price;
+        const isSubtract = editTxForm.adjustmentType !== 'add';
         const netAmount = isPayment
           ? 0
-          : editTxForm.adjustmentType === 'add'
-            ? gross + adjustment
-            : gross - adjustment;
+          : isSubtract
+            ? gross - adjustment
+            : gross + adjustment;
 
         return {
           ...tx,
@@ -1496,10 +1848,10 @@ export default function App() {
           adjustmentType: featureSettings.adjustments ? editTxForm.adjustmentType : 'none',
           settlementAmount,
           netAmount,
-          creditDelta: isPayment ? -settlementAmount : netAmount - settlementAmount,
+          creditDelta: isPayment ? -settlementAmount : netAmount - settlementAmount - adjustment,
           name: editTxForm.name.trim(),
           phone: featureSettings.phone ? editTxForm.phone.trim() : '',
-          billNumber: featureSettings.billNumber ? editTxForm.billNumber.trim() : '',
+          billNumber: featureSettings.billNumber ? formatBillNumber(editTxForm.billNumber) : '',
           description: editTxForm.description.trim() || tx.description
         };
       })
@@ -1669,9 +2021,571 @@ export default function App() {
     </div>
   );
 
+  const handleSaveLoanTransaction = (e) => {
+    if (e) e.preventDefault();
+    const name = loanFormName.trim();
+    const amount = parseFloat(loanFormAmount) || 0;
+    if (!name) {
+      triggerNotification(text('Please enter a name', 'කරුණාකර නමක් ඇතුළත් කරන්න'), 'error');
+      return;
+    }
+    if (amount <= 0) {
+      triggerNotification(text('Please enter a valid amount', 'කරුණාකර වලංගු මුදලක් ඇතුළත් කරන්න'), 'error');
+      return;
+    }
+
+    let delta = 0;
+    if (loanFormAction === 'give') {
+      delta = loanFormType === 'sale' ? amount : -amount;
+    } else {
+      delta = loanFormType === 'sale' ? -amount : amount;
+    }
+
+    const transactionId = createId('tx');
+    const newTransaction = {
+      id: transactionId,
+      time: formatLocalTime(),
+      date: loanFormDate || formatLocalDate(),
+      type: 'credit_settlement',
+      accountType: loanFormType,
+      qty: 0,
+      price: 0,
+      adjustment: 0,
+      adjustmentType: 'none',
+      netAmount: 0,
+      settlementAmount: amount,
+      creditDelta: delta,
+      committed: true,
+      name: name,
+      phone: '',
+      billNumber: '',
+      description: loanFormDescription.trim() || (
+        loanFormAction === 'give'
+          ? (loanFormType === 'sale' ? text('Loan Advance Given', 'ණය / අත්තිකාරම් මුදල් ලබාදීම') : text('Advance Paid to Supplier', 'සැපයුම්කරුට අත්තිකාරම් ගෙවීම'))
+          : (loanFormType === 'sale' ? text('Loan Cash Received', 'ණය මුදල් ලැබීම / පියවීම') : text('Cash Refund from Supplier', 'සැපයුම්කරුගෙන් මුදල් ලැබීම'))
+      )
+    };
+
+    setActiveLedger(prev => ({
+      ...prev,
+      transactions: [newTransaction, ...(prev.transactions || [])]
+    }));
+
+    setLoanFormAmount('');
+    setLoanFormDescription('');
+    triggerNotification(text('Loan transaction saved successfully', 'සාර්ථකව සුරැකුණි'), 'success');
+  };
+
+  const renderLoansView = () => {
+    const uniqueCustomers = getUniqueNames('sale');
+    const uniqueSuppliers = getUniqueNames('purchase');
+
+    const customerParties = uniqueCustomers.map(name => ({
+      name,
+      type: 'sale',
+      balance: getCustomerOutstanding(name, 'sale')
+    }));
+
+    const supplierParties = uniqueSuppliers.map(name => ({
+      name,
+      type: 'purchase',
+      balance: getCustomerOutstanding(name, 'purchase')
+    }));
+
+    let allParties = [...customerParties, ...supplierParties];
+
+    // Filter
+    if (loanSelectedFilter === 'customer') {
+      allParties = customerParties;
+    } else if (loanSelectedFilter === 'supplier') {
+      allParties = supplierParties;
+    }
+
+    // Search
+    if (loanSearchQuery.trim()) {
+      const q = loanSearchQuery.toLowerCase().trim();
+      allParties = allParties.filter(p => p.name.toLowerCase().includes(q));
+    }
+
+    // Sort by absolute balance descending, then name
+    allParties.sort((a, b) => {
+      const diff = Math.abs(b.balance) - Math.abs(a.balance);
+      if (Math.abs(diff) > 0.01) return diff;
+      return a.name.localeCompare(b.name);
+    });
+
+    const suggestions = getUniqueNames(loanFormType).filter(
+      n => n.toLowerCase().includes(loanFormName.toLowerCase()) && n.toLowerCase() !== loanFormName.toLowerCase()
+    );
+
+    return (
+      <section className="space-y-6">
+        {renderTopNav(text('Loans & Debt', 'ණය සහ අත්තිකාරම්'))}
+
+        {/* Desktop Header */}
+        <div className="hidden items-center justify-between md:flex">
+          <div className="flex items-center gap-3">
+            <Wallet className="h-8 w-8 text-violet-600 dark:text-violet-400" />
+            <div>
+              <h2 className="text-3xl font-black">{text('Loans & Debt Register', 'ණය සහ අත්තිකාරම් ලෙජරය')}</h2>
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                {text('Manage cash advances and manual customer/supplier loan tracking', 'අත්තිකාරම් ගෙවීම් සහ ණය ගනුදෙනු පියවීම්')}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => openAppView('menu')}
+            className="flex items-center gap-2 rounded-xl bg-slate-200 px-4 py-2.5 text-sm font-black text-slate-700 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 transition"
+          >
+            {text('Back to Menu', 'ආපසු මෙනුවට')}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          {/* Column 1: Log Loan Form */}
+          <div className="lg:col-span-5">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <h3 className="mb-4 text-lg font-black text-slate-800 dark:text-white">
+                {text('Log Payout / Payment', 'නව ගනුදෙනුවක් සටහන් කිරීම')}
+              </h3>
+
+              <form onSubmit={handleSaveLoanTransaction} className="space-y-4">
+                {/* Party Type selector */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Party Type', 'පාර්ශවය')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLoanFormType('sale');
+                        setLoanFormName('');
+                      }}
+                      className={`rounded-xl py-3 text-xs font-black transition ${loanFormType === 'sale'
+                          ? 'bg-violet-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                    >
+                      {text('Customer (Buyer)', 'පාරිභෝගිකයා (මිලදී ගන්නා)')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLoanFormType('purchase');
+                        setLoanFormName('');
+                      }}
+                      className={`rounded-xl py-3 text-xs font-black transition ${loanFormType === 'purchase'
+                          ? 'bg-violet-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                    >
+                      {text('Supplier (Seller)', 'සැපයුම්කරු')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Name Input with Autocomplete */}
+                <div className="relative">
+                  <label htmlFor="loan-name" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Person\'s Name', 'පුද්ගලයාගේ නම')}
+                  </label>
+                  <input
+                    id="loan-name"
+                    type="text"
+                    required
+                    value={loanFormName}
+                    onChange={(e) => {
+                      setLoanFormName(e.target.value);
+                      setShowLoanNameSuggestions(true);
+                    }}
+                    onFocus={() => setShowLoanNameSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowLoanNameSuggestions(false), 200)}
+                    placeholder={text('Enter or select name...', 'නම ඇතුළත් කරන්න...')}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 shadow-sm focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  {showLoanNameSuggestions && suggestions.length > 0 && (
+                    <div className="absolute z-30 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+                      {suggestions.map(name => (
+                        <button
+                          key={name}
+                          type="button"
+                          onMouseDown={() => {
+                            setLoanFormName(name);
+                            setShowLoanNameSuggestions(false);
+                          }}
+                          className="block w-full px-4 py-2.5 text-left text-xs font-black text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {loanFormName.trim() && (
+                    <div className="mt-1 text-xs font-bold text-slate-400">
+                      {text('Current Outstanding: ', 'දැනට පවතින ණය ශේෂය: ')}
+                      <span className="text-violet-600 dark:text-violet-400">
+                        {formatCurrency(getCustomerOutstanding(loanFormName, loanFormType))}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Payout vs Receipt toggle */}
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Transaction Action', 'ගනුදෙනු වර්ගය')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLoanFormAction('give')}
+                      className={`rounded-xl py-3 text-xs font-black transition ${loanFormAction === 'give'
+                          ? 'bg-amber-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                    >
+                      {loanFormType === 'sale'
+                        ? text('Give Loan / Advance', 'ණය / අත්තිකාරම් දීම')
+                        : text('Pay Advance', 'අත්තිකාරම් ගෙවීම')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLoanFormAction('receive')}
+                      className={`rounded-xl py-3 text-xs font-black transition ${loanFormAction === 'receive'
+                          ? 'bg-emerald-600 text-white shadow-md'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                        }`}
+                    >
+                      {loanFormType === 'sale'
+                        ? text('Receive Settle Cash', 'ණය පියවීම / ලැබීම')
+                        : text('Receive Settle Cash', 'ණය පියවීම / ලැබීම')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Amount field */}
+                <div>
+                  <label htmlFor="loan-amount" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Cash Amount (Rs.)', 'මුදල (රු.)')}
+                  </label>
+                  <input
+                    id="loan-amount"
+                    type="number"
+                    step="0.01"
+                    required
+                    value={loanFormAmount}
+                    onChange={(e) => setLoanFormAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 shadow-sm focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                </div>
+
+                {/* Date field */}
+                <div>
+                  <label htmlFor="loan-date" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Transaction Date', 'දිනය')}
+                  </label>
+                  <input
+                    id="loan-date"
+                    type="date"
+                    required
+                    value={loanFormDate}
+                    onChange={(e) => setLoanFormDate(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 shadow-sm focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                </div>
+
+                {/* Description field */}
+                <div>
+                  <label htmlFor="loan-desc" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {text('Description / Notes', 'විස්තරය')}
+                  </label>
+                  <input
+                    id="loan-desc"
+                    type="text"
+                    value={loanFormDescription}
+                    onChange={(e) => setLoanFormDescription(e.target.value)}
+                    placeholder={text('e.g., Kulathunga advance payout', 'විස්තර සටහනක්...')}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 shadow-sm focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-700 py-3.5 text-sm font-black uppercase text-white shadow-lg transition hover:bg-violet-800 active:scale-95"
+                >
+                  <Save className="h-5 w-5" />
+                  <span>{text('Save Transaction', 'ගනුදෙනුව සුරකින්න')}</span>
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Column 2: Ledger Balances */}
+          <div className="lg:col-span-7">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-lg font-black text-slate-800 dark:text-white">
+                  {text('Outstanding Balances', 'ණය ශේෂයන්')}
+                </h3>
+
+                {/* Search Bar */}
+                <div className="relative w-full sm:w-64">
+                  <input
+                    type="text"
+                    value={loanSearchQuery}
+                    onChange={(e) => setLoanSearchQuery(e.target.value)}
+                    placeholder={text('Search person...', 'සොයන්න...')}
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2 pl-9 pr-4 text-xs font-bold text-slate-800 focus:border-violet-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                </div>
+              </div>
+
+              {/* Tab Filters */}
+              <div className="mb-4 flex border-b border-slate-200 dark:border-slate-800">
+                {[
+                  ['all', text('All', 'සියල්ල')],
+                  ['customer', text('Customers', 'පාරිභෝගිකයින්')],
+                  ['supplier', text('Suppliers', 'සැපයුම්කරුවන්')]
+                ].map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setLoanSelectedFilter(id)}
+                    className={`border-b-2 px-4 py-2.5 text-xs font-black transition-all ${loanSelectedFilter === id
+                        ? 'border-violet-600 text-violet-600 dark:border-violet-400 dark:text-violet-400'
+                        : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Parties List */}
+              <div className="max-h-[500px] overflow-y-auto pr-1 space-y-2">
+                {allParties.length === 0 ? (
+                  <div className="py-8 text-center text-xs font-bold text-slate-400 dark:text-slate-500">
+                    {text('No records found', 'ගනුදෙනුකරුවන් හෝ සැපයුම්කරුවන් හමු නොවීය')}
+                  </div>
+                ) : (
+                  allParties.map(p => {
+                    const isCustomer = p.type === 'sale';
+                    const bal = p.balance;
+                    const absBal = Math.abs(bal);
+
+                    let statusText = '';
+                    let badgeColor = '';
+                    let balColor = '';
+
+                    if (isCustomer) {
+                      if (bal > 0.009) {
+                        statusText = text('Owes Us', 'අපට ලැබිය යුතු');
+                        badgeColor = 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300';
+                        balColor = 'text-amber-600 dark:text-amber-400';
+                      } else if (bal < -0.009) {
+                        statusText = text('Advance (We Owe)', 'අත්තිකාරම් (අප ගෙවිය යුතු)');
+                        badgeColor = 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
+                        balColor = 'text-emerald-600 dark:text-emerald-400';
+                      } else {
+                        statusText = text('Settled', 'පියවා ඇත');
+                        badgeColor = 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400';
+                        balColor = 'text-slate-400';
+                      }
+                    } else {
+                      // Supplier
+                      if (bal > 0.009) {
+                        statusText = text('We Owe', 'අප ගෙවිය යුතු');
+                        badgeColor = 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300';
+                        balColor = 'text-rose-600 dark:text-rose-400';
+                      } else if (bal < -0.009) {
+                        statusText = text('Advance (They Owe)', 'අත්තිකාරම් (ලැබිය යුතු)');
+                        badgeColor = 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300';
+                        balColor = 'text-emerald-600 dark:text-emerald-400';
+                      } else {
+                        statusText = text('Settled', 'පියවා ඇත');
+                        badgeColor = 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400';
+                        balColor = 'text-slate-400';
+                      }
+                    }
+
+                    return (
+                      <div
+                        key={`${p.name}-${p.type}`}
+                        onClick={() => setLoanSelectedParty(p)}
+                        className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-150 bg-slate-50/50 p-4 transition-all hover:bg-slate-100/50 hover:shadow-sm dark:border-slate-800 dark:bg-slate-950/20 dark:hover:bg-slate-900/50"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-black text-slate-800 dark:text-white">{p.name}</span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-black uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                              {isCustomer ? text('Customer', 'පාරිභෝගිකයා') : text('Supplier', 'සැපයුම්කරු')}
+                            </span>
+                          </div>
+                          <span className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-bold ${badgeColor}`}>
+                            {statusText}
+                          </span>
+                        </div>
+
+                        <div className="text-right space-y-1">
+                          <span className={`block text-sm font-black ${balColor}`}>
+                            {formatCurrency(absBal)}
+                          </span>
+                          <span className="block text-[10px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                            {text('View History ➔', 'ගනුදෙනු විස්තර ➔')}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Selected Party History Modal */}
+        {loanSelectedParty && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+            <div className="relative flex max-h-[85vh] w-full max-w-3xl flex-col rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-200 p-5 dark:border-slate-800">
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 dark:text-white">
+                    {loanSelectedParty.name}
+                  </h3>
+                  <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[10px] font-black uppercase text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                    {loanSelectedParty.type === 'sale'
+                      ? text('Customer Transaction History', 'පාරිභෝගික ගනුදෙනු විස්තරය')
+                      : text('Supplier Transaction History', 'සැපයුම්කරු ගනුදෙනු විස්තරය')}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLoanSelectedParty(null)}
+                  className="rounded-full bg-slate-100 p-1.5 text-slate-500 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* History list container */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                {(() => {
+                  const partyTxList = [
+                    ...(activeLedger.transactions || []),
+                    ...archivedLedgers.flatMap(l => l.transactions || [])
+                  ].filter(tx => tx.name && tx.name.trim().toLowerCase() === loanSelectedParty.name.toLowerCase() && txAccountType(tx) === loanSelectedParty.type);
+
+                  if (partyTxList.length === 0) {
+                    return (
+                      <div className="py-12 text-center text-xs font-bold text-slate-400">
+                        {text('No transaction history found for this person.', 'කිසිදු ගනුදෙනුවක් හමු නොවීය.')}
+                      </div>
+                    );
+                  }
+
+                  const sortedChronological = [...partyTxList].sort((a, b) => {
+                    const dateA = a.date || '';
+                    const dateB = b.date || '';
+                    if (dateA !== dateB) return dateA.localeCompare(dateB);
+                    return (a.time || '').localeCompare(b.time || '');
+                  });
+
+                  let running = 0;
+                  const txWithRunning = sortedChronological.map(tx => {
+                    running += getCreditDelta(tx);
+                    return { ...tx, runningBalance: running };
+                  });
+
+                  const displayTxList = [...txWithRunning].reverse();
+
+                  return (
+                    <div className="space-y-3">
+                      {/* Current Balance card */}
+                      <div className="flex items-center justify-between rounded-xl bg-violet-50/50 p-4 border border-violet-100 dark:bg-violet-950/20 dark:border-violet-800/50 mb-3">
+                        <span className="text-xs font-black text-violet-800 dark:text-violet-300">
+                          {text('Net Cumulative Balance', 'මුළු ශේෂය')}
+                        </span>
+                        <span className="text-lg font-black text-violet-700 dark:text-violet-300">
+                          {formatCurrency(running)}
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {displayTxList.map(tx => {
+                          const delta = getCreditDelta(tx);
+                          return (
+                            <div key={tx.id} className="py-3.5 flex items-center justify-between gap-4">
+                              <div className="space-y-0.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-black text-slate-800 dark:text-white">
+                                    {tx.description || text('Transaction', 'ගනුදෙනුව')}
+                                  </span>
+                                  {tx.billNumber && (
+                                    <span className="rounded bg-slate-100 px-1 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                                      #{tx.billNumber}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] font-bold text-slate-400">
+                                  {tx.date} {tx.time && `| ${tx.time}`}
+                                </div>
+                                {isBillLike(tx) && tx.qty > 0 && (
+                                  <div className="text-[10px] font-bold text-slate-400">
+                                    {tx.qty} {tx.itemUnit || 'kg'} x {formatCurrency(tx.price)} | {text('Gross:', 'මුළු:')} {formatCurrency(tx.qty * tx.price)}
+                                    {tx.adjustment > 0 && ` | ${text('Adj:', 'ගැලපුම්:')} ${formatCurrency(tx.adjustment)}`}
+                                    {tx.settlementAmount > 0 && ` | ${text('Settled:', 'පියවූ:')} ${formatCurrency(tx.settlementAmount)}`}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="text-right space-y-0.5">
+                                <div className={`text-xs font-black ${delta > 0.009
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : delta < -0.009
+                                      ? 'text-emerald-600 dark:text-emerald-400'
+                                      : 'text-slate-400'
+                                  }`}>
+                                  {delta > 0 ? '+' : ''}{formatCurrency(delta)}
+                                </div>
+                                <div className="text-[9px] font-bold text-slate-400">
+                                  {text('Bal:', 'ශේෂය:')} {formatCurrency(tx.runningBalance)}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-end gap-2 border-t border-slate-200 p-4 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setLoanSelectedParty(null)}
+                  className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  {text('Close', 'වසන්න')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  };
+
   const renderMenuView = () => {
     const menuItems = [
       { id: 'sales', label: 'SALES', icon: ShoppingCart },
+      { id: 'loans', label: 'LOANS & DEBT', icon: Wallet },
       { id: 'dashboard', label: 'DASHBOARD', icon: LayoutDashboard },
       { id: 'summary', label: 'SUMMARY', icon: ClipboardList },
       { id: 'settings', label: 'SETTINGS', icon: Settings },
@@ -1815,7 +2729,12 @@ export default function App() {
     <>
       <div className="receipt-header text-center mb-6">
         <h2 className="receipt-business-title font-bold uppercase">{receiptBusinessTitle}</h2>
-        {receiptAddress && <p className="receipt-business-line">{receiptAddress}</p>}
+        {receiptAddressLines.map((line, index) => (
+          <p key={`statement-address-${index}`} className="receipt-business-line">{line}</p>
+        ))}
+        {receiptMobileLines.map((line, index) => (
+          <p key={`statement-mobile-${index}`} className="receipt-business-line">{line}</p>
+        ))}
         <div className="border-b border-dashed border-black my-2"></div>
         <h3 className="text-xs font-bold tracking-widest uppercase">
           {statementPrintType === 'dashboard' ? 'PROFIT STATEMENT' : 'INVENTORY SUMMARY'}
@@ -1870,50 +2789,48 @@ export default function App() {
   const renderReceiptContent = () => {
     if (!currentPrintBill) return null;
 
+    const receiptBillNumber = formatBillNumber(currentPrintBill.billNumber);
+
     return (
       <>
         <div className="receipt-header text-center mb-6">
           <h2 className="receipt-business-title font-bold uppercase">{receiptBusinessTitle}</h2>
-          {receiptAddress && <p className="receipt-business-line">{receiptAddress}</p>}
-          {receiptPhones.length > 0 && (
-            <p className="receipt-business-line">Tel: {receiptPhones.join(' / ')}</p>
-          )}
+          {receiptAddressLines.map((line, index) => (
+            <p key={`receipt-address-${index}`} className="receipt-business-line">{line}</p>
+          ))}
+          {receiptMobileLines.map((line, index) => (
+            <p key={`receipt-mobile-${index}`} className="receipt-business-line">{line}</p>
+          ))}
           <div className="border-b border-dashed border-black my-2"></div>
-          <h3 className="text-xs font-bold tracking-widest uppercase">
-            {currentPrintBill.type === 'credit_settlement'
-              ? text('Debt Settlement', 'ණය අඩු කිරීම').toUpperCase()
-              : currentPrintBill.type === 'purchase' ? t('purchase').toUpperCase() : t('sale').toUpperCase()}
+          <h3 className="receipt-section-title text-xs font-bold">
+            {getReceiptTypeLabel(currentPrintBill)}
           </h3>
         </div>
 
         <div className="text-xs space-y-1">
           <div className="flex justify-between">
-            <span>Date/Time:</span>
+            <span>{RECEIPT_LABELS.dateTime}:</span>
             <span>{currentPrintBill.date} {currentPrintBill.time}</span>
           </div>
-          <div className="flex justify-between">
-            <span>Ref ID:</span>
-            <span>{currentPrintBill.id}</span>
-          </div>
-          {currentPrintBill.billNumber && (
+          {receiptBillNumber && (
             <div className="flex justify-between font-bold">
-              <span>{t('billNumber')}:</span>
-              <span>{currentPrintBill.billNumber}</span>
+              <span>{RECEIPT_LABELS.billNo}:</span>
+              <span>{receiptBillNumber}</span>
             </div>
           )}
           <div className="flex justify-between">
-            <span>Type:</span>
-            <span className="font-bold uppercase">{txAccountType(currentPrintBill)}</span>
+            <span>{RECEIPT_LABELS.type}:</span>
+            <span className="font-bold">{getReceiptTypeLabel(currentPrintBill)}</span>
           </div>
           {currentPrintBill.name && (
             <div className="flex justify-between font-bold">
-              <span>{txAccountType(currentPrintBill) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span>
-              <span className="uppercase">{currentPrintBill.name}</span>
+              <span>{getReceiptNameLabel(currentPrintBill)}:</span>
+              <span>{currentPrintBill.name}</span>
             </div>
           )}
           {currentPrintBill.phone && (
             <div className="flex justify-between">
-              <span>{t('phone')}:</span>
+              <span>{RECEIPT_LABELS.phone}:</span>
               <span>{currentPrintBill.phone}</span>
             </div>
           )}
@@ -1930,15 +2847,14 @@ export default function App() {
                   <span>{formatCurrency(currentPrintBill.qty * currentPrintBill.price)}</span>
                 </div>
                 <div className="receipt-item-meta flex justify-between">
-                  <span>{currentPrintBill.qty.toLocaleString()} {currentPrintBill.itemUnit || 'kg'}</span>
-                  <span>@ {formatCurrency(currentPrintBill.price)}</span>
+                  <span>{formatReceiptQtyRate(currentPrintBill)}</span>
                 </div>
               </div>
 
               <div className="border-b border-dashed border-black/30 my-2"></div>
 
               <div className="flex justify-between font-semibold">
-                <span>{t('grossTotal')}:</span>
+                <span>{RECEIPT_LABELS.grossTotal}:</span>
                 <span>{formatCurrency(currentPrintBill.qty * currentPrintBill.price)}</span>
               </div>
             </>
@@ -1947,7 +2863,7 @@ export default function App() {
           {currentPrintBill.adjustment > 0 && (
             <div className="flex justify-between text-[11px]">
               <span>
-                {currentPrintBill.adjustmentType === 'add' ? t('addPrevBalance') : t('subAdvance')}
+                {currentPrintBill.adjustmentType === 'add' ? RECEIPT_LABELS.previousBalance : RECEIPT_LABELS.advance}
               </span>
               <span>{formatCurrency(currentPrintBill.adjustment)}</span>
             </div>
@@ -1955,7 +2871,7 @@ export default function App() {
 
           {getSettlement(currentPrintBill) > 0 && (
             <div className="flex justify-between text-[11px] font-bold">
-              <span>{text('Debt Settlement', 'ණය අඩු කිරීම')}</span>
+              <span>{RECEIPT_LABELS.debtSettlement}</span>
               <span>{formatCurrency(getSettlement(currentPrintBill))}</span>
             </div>
           )}
@@ -1964,7 +2880,7 @@ export default function App() {
         <div className="border-b border-dashed border-black my-3"></div>
 
         <div className="receipt-net-total flex justify-between font-black">
-          <span>{text('NET TOTAL', 'ශුද්ධ එකතුව')}:</span>
+          <span>{RECEIPT_LABELS.netTotal}:</span>
           <span>{formatCurrency(currentPrintBill.type === 'credit_settlement' ? getSettlement(currentPrintBill) : currentPrintBill.netAmount)}</span>
         </div>
 
@@ -1975,23 +2891,26 @@ export default function App() {
             <p>{receiptFooterMessage}</p>
           </div>
         )}
+
+        <div className="receipt-footer text-center mt-6">
+          <p>{BILL_FOOTER_TEXT}</p>
+        </div>
       </>
     );
   };
 
   return (
     <>
-      <div className={`min-h-screen transition-colors duration-200 print:hidden ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
-        
+      <div className={`app-shell min-h-screen transition-colors duration-200 print:hidden ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'}`}>
+
         {/* NOTIFICATION INLINE FEEDBACK */}
         {notification && (
-          <div className={`fixed top-3 left-3 right-3 sm:top-4 sm:left-auto sm:right-4 sm:max-w-md z-50 flex items-start gap-2 px-4 py-3 rounded-lg shadow-xl border transition-all duration-300 transform translate-y-0 ${
-            notification.type === 'error' 
-              ? 'bg-rose-700/95 text-white border-rose-500' 
+          <div className={`safe-notification fixed top-3 left-3 right-3 sm:top-4 sm:left-auto sm:right-4 sm:max-w-md z-50 flex items-start gap-2 px-4 py-3 rounded-lg shadow-xl border transition-all duration-300 transform translate-y-0 ${notification.type === 'error'
+              ? 'bg-rose-700/95 text-white border-rose-500'
               : notification.type === 'info'
                 ? 'bg-sky-700/95 text-white border-sky-500'
                 : 'bg-emerald-700/95 text-white border-emerald-500'
-          }`}>
+            }`}>
             <CheckCircle className="w-5 h-5 shrink-0" />
             <span className="text-xs sm:text-sm font-medium leading-relaxed">{notification.message}</span>
           </div>
@@ -1999,7 +2918,7 @@ export default function App() {
 
         {/* SCREEN CONTENT WRAPPER */}
         <div className="max-w-7xl mx-auto px-3 py-4 sm:px-6 lg:px-8">
-          
+
           {/* HEADER BAR */}
           <header className="hidden md:flex md:flex-row md:items-center md:justify-between pb-4 mb-6 border-b border-slate-200 dark:border-slate-800 gap-4">
             <div className="flex items-center gap-3 min-w-0">
@@ -2015,7 +2934,7 @@ export default function App() {
                 </p>
               </div>
             </div>
-            
+
             <div className="flex items-center gap-2 w-full sm:w-auto">
               {/* Language Toggle */}
               <button
@@ -2081,11 +3000,10 @@ export default function App() {
                     key={key}
                     type="button"
                     onClick={() => setFeatureSettings(prev => ({ ...prev, [key]: !prev[key] }))}
-                    className={`rounded-lg border px-3 py-2 text-left text-[11px] font-bold transition ${
-                      featureSettings[key]
+                    className={`rounded-lg border px-3 py-2 text-left text-[11px] font-bold transition ${featureSettings[key]
                         ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
                         : 'border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-850/40'
-                    }`}
+                      }`}
                   >
                     {label}
                   </button>
@@ -2109,26 +3027,166 @@ export default function App() {
                     ['phone1', text('Phone 1', 'දුරකථන 1')],
                     ['phone2', text('Phone 2', 'දුරකථන 2')],
                     ['phone3', text('Phone 3', 'දුරකථන 3')],
+                    ['phone4', text('Phone 4', 'දුරකථන 4')],
                     ['footerMessage', text('Footer Message', 'අවසාන පණිවිඩය')]
                   ].map(([key, label]) => (
                     <div key={key}>
                       <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
                         {label}
                       </label>
-                      <input
-                        type="text"
-                        value={receiptSettings[key]}
-                        onChange={(e) => setReceiptSettings(prev => ({ ...prev, [key]: e.target.value }))}
-                        className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                      />
+                      {key === 'address' ? (
+                        <textarea
+                          rows={2}
+                          value={receiptSettings[key] || ''}
+                          onChange={(e) => setReceiptSettings(prev => ({ ...prev, [key]: e.target.value }))}
+                          className="w-full resize-none rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={receiptSettings[key] || ''}
+                          onChange={(e) => setReceiptSettings(prev => ({ ...prev, [key]: e.target.value }))}
+                          className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      )}
                     </div>
                   ))}
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      {text('Paper Width', 'Paper Width')}
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg border border-slate-300 p-1 dark:border-slate-750">
+                      {['80', '58'].map(width => (
+                        <button
+                          key={width}
+                          type="button"
+                          onClick={() => setReceiptSettings(prev => ({ ...prev, printerPaperWidth: width }))}
+                          className={`rounded-md px-3 py-2 text-xs font-black ${receiptPaperWidth === width
+                              ? 'bg-emerald-500 text-white'
+                              : 'text-slate-500 dark:text-slate-350'
+                            }`}
+                        >
+                          {width}mm
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      {text('Connection', 'Connection')}
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg border border-slate-300 p-1 dark:border-slate-750">
+                      {[
+                        ['bluetooth', 'Bluetooth'],
+                        ['tcp', 'Wi-Fi']
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setReceiptSettings(prev => ({ ...prev, printerConnection: value }))}
+                          className={`rounded-md px-3 py-2 text-xs font-black ${receiptSettings.printerConnection === value
+                              ? 'bg-emerald-500 text-white'
+                              : 'text-slate-500 dark:text-slate-350'
+                            }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {receiptSettings.printerConnection === 'bluetooth' ? (
+                    <div>
+                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                        {text('Bluetooth Printer', 'Bluetooth Printer')}
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={loadPairedPrinters}
+                          disabled={printerLookupBusy}
+                          className="shrink-0 rounded-lg bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-60 dark:bg-white dark:text-slate-950"
+                        >
+                          {printerLookupBusy ? text('Loading', 'Loading') : text('Load Paired', 'Load Paired')}
+                        </button>
+                        <input
+                          type="text"
+                          value={receiptSettings.printerBluetoothAddress}
+                          onChange={(e) => setReceiptSettings(prev => ({ ...prev, printerBluetoothAddress: e.target.value }))}
+                          placeholder="00:11:22:33:44:55"
+                          className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      </div>
+                      {pairedPrinters.length > 0 && (
+                        <select
+                          value={receiptSettings.printerBluetoothAddress}
+                          onChange={(e) => {
+                            const printer = pairedPrinters.find(item => item.address === e.target.value);
+                            setReceiptSettings(prev => ({
+                              ...prev,
+                              printerBluetoothAddress: e.target.value,
+                              printerBluetoothName: printer?.name || ''
+                            }));
+                          }}
+                          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:bg-slate-950 dark:text-slate-100"
+                        >
+                          <option value="">{text('Select printer', 'Select printer')}</option>
+                          {pairedPrinters.map(printer => (
+                            <option key={printer.address} value={printer.address}>
+                              {printer.name || 'Bluetooth Printer'} - {printer.address}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                          {text('Printer IP', 'Printer IP')}
+                        </label>
+                        <input
+                          type="text"
+                          value={receiptSettings.printerIpAddress}
+                          onChange={(e) => setReceiptSettings(prev => ({ ...prev, printerIpAddress: e.target.value }))}
+                          placeholder="192.168.1.50"
+                          className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                          {text('Port', 'Port')}
+                        </label>
+                        <input
+                          type="number"
+                          value={receiptSettings.printerIpPort}
+                          onChange={(e) => setReceiptSettings(prev => ({ ...prev, printerIpPort: e.target.value }))}
+                          className="w-full rounded-lg border border-slate-300 bg-transparent px-3 py-2 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <label className="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 dark:border-slate-750 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(receiptSettings.printerCutPaper)}
+                      onChange={(e) => setReceiptSettings(prev => ({ ...prev, printerCutPaper: e.target.checked }))}
+                      className="h-4 w-4 accent-emerald-500"
+                    />
+                    {text('Cut Paper', 'Cut Paper')}
+                  </label>
                 </div>
               </div>
             </section>
           )}
 
           {appView === 'menu' && renderMenuView()}
+          {appView === 'loans' && renderLoansView()}
           {appView === 'dashboard' && renderDashboardView()}
           {appView === 'summary' && renderSummaryView()}
           {appView === 'settings' && renderSimpleView('Settings', Settings, text('Use the open settings panel above to tune fields, receipt header, phone numbers, and footer message.', 'ඉහළ settings panel එකෙන් fields සහ receipt විස්තර වෙනස් කරන්න.'))}
@@ -2136,1717 +3194,1693 @@ export default function App() {
           {appView === 'about' && renderSimpleView('About', Info, text('Mobile-first Shopbook/POS for coconut and distribution stock, invoices, inventory, debt, and profit tracking.', 'පොල් සහ බෙදාහැරීම් stock, bill, ණය සහ ලාභය සදහා mobile Shopbook/POS.'))}
 
           {appView === 'sales' && (
-          <main className="space-y-6">
-            <div className={`${activeModule === 'coconuts' ? 'hidden md:block' : 'sticky'} top-0 z-20 -mx-3 bg-slate-50/95 px-3 py-2 backdrop-blur dark:bg-slate-950/95 sm:static sm:mx-0 sm:bg-transparent sm:px-0 sm:py-0 sm:backdrop-blur-none`}>
-              <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-1 text-xs font-black dark:border-slate-800 dark:bg-slate-900">
-                <button
-                  type="button"
-                  onClick={() => setActiveModule('coconuts')}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 transition ${
-                    activeModule === 'coconuts'
-                      ? 'bg-emerald-500 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-350'
-                  }`}
-                >
-                  <Sprout className="w-4 h-4" />
-                  <span>{text('Coconuts', 'පොල්')}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveModule('husks')}
-                  className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 transition ${
-                    activeModule === 'husks'
-                      ? 'bg-emerald-500 text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-350'
-                  }`}
-                >
-                  <PackageOpen className="w-4 h-4" />
-                  <span>{text('Husks', 'ලෙලි')}</span>
-                </button>
+            <main className="space-y-6">
+              <div className={`${activeModule === 'coconuts' ? 'hidden md:block' : 'sticky safe-sticky-top'} top-0 z-20 -mx-3 bg-slate-50/95 px-3 py-2 backdrop-blur dark:bg-slate-950/95 sm:static sm:mx-0 sm:bg-transparent sm:px-0 sm:py-0 sm:backdrop-blur-none`}>
+                <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-1 text-xs font-black dark:border-slate-800 dark:bg-slate-900">
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('coconuts')}
+                    className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 transition ${activeModule === 'coconuts'
+                        ? 'bg-emerald-500 text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-350'
+                      }`}
+                  >
+                    <Sprout className="w-4 h-4" />
+                    <span>{text('Coconuts', 'පොල්')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('husks')}
+                    className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 transition ${activeModule === 'husks'
+                        ? 'bg-emerald-500 text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-350'
+                      }`}
+                  >
+                    <PackageOpen className="w-4 h-4" />
+                    <span>{text('Husks', 'ලෙලි')}</span>
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {activeModule === 'coconuts' ? (
-              <>
+              {activeModule === 'coconuts' ? (
+                <>
 
-            {/* MOBILE-FIRST BILL CALCULATOR */}
-            <section className="mobile-calc-screen md:hidden -mx-3 -mt-4 grid grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden bg-[#4c4658] text-white shadow-xl">
-              <div className="flex items-center justify-between bg-gradient-to-r from-violet-800 to-fuchsia-700 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  {posBill.type === 'sale' ? <ArrowUpRight className="h-5 w-5" /> : <ArrowDownLeft className="h-5 w-5" />}
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-2xl font-black leading-none tracking-normal">
-                        {posBill.type === 'sale' ? text('Sales', 'විකුණුම්') : text('Purchase', 'ගැනුම්')}
-                      </h2>
+                  {/* MOBILE-FIRST BILL CALCULATOR */}
+                  <section className="mobile-calc-screen md:hidden -mx-3 -mt-4 grid grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden bg-[#4c4658] text-white shadow-xl">
+                    <div className="flex items-center justify-between bg-gradient-to-r from-violet-800 to-fuchsia-700 px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        {posBill.type === 'sale' ? <ArrowUpRight className="h-5 w-5" /> : <ArrowDownLeft className="h-5 w-5" />}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-2xl font-black leading-none tracking-normal">
+                              {posBill.type === 'sale' ? text('Sales', 'විකුණුම්') : text('Purchase', 'ගැනුම්')}
+                            </h2>
+                            <button
+                              type="button"
+                              onClick={() => setActiveModule('husks')}
+                              className="flex items-center gap-1 rounded-full bg-white/15 px-2 py-1 text-[10px] font-black text-white ring-1 ring-white/25 active:scale-95"
+                              aria-label={text('Open coconut husk page', 'පොල් ලෙලි පිටුව')}
+                              title={text('Coconut Husks', 'පොල් ලෙලි')}
+                            >
+                              <PackageOpen className="h-3.5 w-3.5" />
+                              <span>{text('Husks', 'පොල් ලෙලි')}</span>
+                            </button>
+                          </div>
+                          <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-100">
+                            {text('Bill calculator', 'බිල් කැල්කියුලේටරය')}
+                          </p>
+                        </div>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => setActiveModule('husks')}
-                        className="flex items-center gap-1 rounded-full bg-white/15 px-2 py-1 text-[10px] font-black text-white ring-1 ring-white/25 active:scale-95"
-                        aria-label={text('Open coconut husk page', 'පොල් ලෙලි පිටුව')}
-                        title={text('Coconut Husks', 'පොල් ලෙලි')}
+                        onClick={() => openAppView('menu')}
+                        className="rounded-lg p-2 text-white active:scale-95"
+                        aria-label="Menu"
                       >
-                        <PackageOpen className="h-3.5 w-3.5" />
-                        <span>{text('Husks', 'පොල් ලෙලි')}</span>
+                        <Menu className="h-6 w-6" />
                       </button>
                     </div>
-                    <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-100">
-                      {text('Bill calculator', 'බිල් කැල්කියුලේටරය')}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => openAppView('menu')}
-                  className="rounded-lg p-2 text-white active:scale-95"
-                  aria-label="Menu"
-                >
-                  <Menu className="h-6 w-6" />
-                </button>
-              </div>
 
-              <div className="bg-[#dce9e8] px-3 py-2 text-slate-950">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="relative min-w-0 flex-1">
-                    <input
-                      type="text"
-                      value={posBill.name}
-                      onChange={(e) => {
-                        setPosBill(prev => ({ ...prev, name: e.target.value }));
-                        setShowNameSuggestions(true);
-                      }}
-                      onFocus={() => setShowNameSuggestions(true)}
-                      onBlur={() => setTimeout(() => setShowNameSuggestions(false), 120)}
-                      onKeyDown={handleNameKeyDown}
-                      placeholder={posBill.type === 'purchase' ? t('nameSupplier') : t('nameCustomer')}
-                      className="w-full rounded-lg border border-slate-300 bg-white/80 px-3 py-2 text-sm font-black outline-none focus:ring-2 focus:ring-violet-600"
-                    />
-                    {renderNameSuggestions()}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setPosBill(prev => ({ ...prev, type: prev.type === 'sale' ? 'purchase' : 'sale' }))}
-                    className={`shrink-0 rounded-lg px-3 py-2 text-xs font-black text-white ${
-                      posBill.type === 'sale' ? 'bg-emerald-600' : 'bg-rose-600'
-                    }`}
-                  >
-                    {posBill.type === 'sale' ? text('Sale', 'විකිණුම්') : text('Buy', 'ගැනුම්')}
-                  </button>
-                </div>
+                    <div className="bg-[#dce9e8] px-3 py-2 text-slate-950">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="relative min-w-0 flex-1">
+                          <input
+                            type="text"
+                            value={posBill.name}
+                            onChange={(e) => {
+                              setPosBill(prev => ({ ...prev, name: e.target.value }));
+                              setShowNameSuggestions(true);
+                            }}
+                            onFocus={() => setShowNameSuggestions(true)}
+                            onBlur={() => setTimeout(() => setShowNameSuggestions(false), 120)}
+                            onKeyDown={handleNameKeyDown}
+                            placeholder={posBill.type === 'purchase' ? t('nameSupplier') : t('nameCustomer')}
+                            className="w-full rounded-lg border border-slate-300 bg-white/80 px-3 py-2 text-sm font-black outline-none focus:ring-2 focus:ring-violet-600"
+                          />
+                          {renderNameSuggestions()}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPosBill(prev => ({ ...prev, type: prev.type === 'sale' ? 'purchase' : 'sale' }))}
+                          className={`shrink-0 rounded-lg px-3 py-2 text-xs font-black text-white ${posBill.type === 'sale' ? 'bg-emerald-600' : 'bg-rose-600'
+                            }`}
+                        >
+                          {posBill.type === 'sale' ? text('Sale', 'විකිණුම්') : text('Buy', 'ගැනුම්')}
+                        </button>
+                      </div>
 
-                <div className="mt-2 grid grid-cols-2 gap-2 rounded-lg bg-slate-950/10 p-1 text-[11px] font-black">
-                  <button
-                    type="button"
-                    onClick={() => switchPOSItemType('husk')}
-                    aria-pressed={currentPosItemPreset.itemType === 'husk'}
-                    className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${
-                      currentPosItemPreset.itemType === 'husk'
-                        ? 'bg-violet-700 text-white shadow-sm'
-                        : 'bg-white/60 text-slate-700'
-                    }`}
-                  >
-                    <PackageOpen className="h-3.5 w-3.5" />
-                    <span>{text('Husks kg', 'ලෙලි kg')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => switchPOSItemType('coconut')}
-                    aria-pressed={currentPosItemPreset.itemType === 'coconut'}
-                    className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${
-                      currentPosItemPreset.itemType === 'coconut'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-white/60 text-slate-700'
-                    }`}
-                  >
-                    <Sprout className="h-3.5 w-3.5" />
-                    <span>{text('Coconuts pcs', 'පොල් pcs')}</span>
-                  </button>
-                </div>
-
-                <div className="mt-2 grid grid-cols-[minmax(0,1fr)_8.5rem] gap-2">
-                  <input
-                    type="text"
-                    value={posBill.itemDescription}
-                    onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
-                    placeholder={currentPosItemPreset.itemDescription}
-                    className="min-w-0 rounded-lg border border-slate-300 bg-white/80 px-3 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-violet-600"
-                  />
-                  <input
-                    type="date"
-                    value={posBill.date}
-                    onChange={(e) => setPosBill(prev => ({ ...prev, date: e.target.value }))}
-                    className="min-w-0 rounded-lg border border-slate-300 bg-white/80 px-2 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-violet-600"
-                  />
-                </div>
-
-                <div className="mt-2 text-right">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="rounded-full bg-slate-950/10 px-3 py-1 text-xs font-black uppercase text-slate-700">
-                      {mobileFieldLabels[activeMobileCalcField]}
-                    </span>
-                    {posBill.name && (
-                      <span className="text-[11px] font-black text-amber-700">
-                        {formatCurrency(outstanding)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 min-h-[38px] truncate text-4xl font-black leading-none">
-                    {mobileDisplayValue}
-                  </div>
-                  <div className="mt-0.5 truncate text-2xl font-black leading-tight">
-                    {formatCurrency(posNet)}
-                  </div>
-                  <div className="mt-0.5 text-[11px] font-bold text-slate-600">
-                    {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)}
-                    {hasPosAdjustment ? ` / ${posBill.balanceType === 'add' ? '+' : '-'} ${formatCurrency(posAdjustment)}` : ''}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mobile-calc-keypad grid min-h-0 grid-cols-4 gap-2 p-2">
-                <button
-                  type="button"
-                  onClick={handleMobileClearAll}
-                  className="rounded-lg bg-rose-300 px-2 py-4 text-2xl font-black text-white active:scale-95"
-                >
-                  AC
-                </button>
-                <button
-                  type="button"
-                  onClick={handleMobileClearField}
-                  className="rounded-lg bg-rose-300 px-2 py-4 text-2xl font-black text-white active:scale-95"
-                >
-                  C
-                </button>
-                <button
-                  type="button"
-                  onClick={handleMobilePercent}
-                  className="rounded-lg bg-black px-2 py-4 text-2xl font-black text-white active:scale-95"
-                >
-                  %
-                </button>
-                <button
-                  type="button"
-                  onClick={handleMobileNextField}
-                  className="rounded-lg bg-black px-2 py-4 text-lg font-black text-white active:scale-95"
-                >
-                  {text('Next', 'ඊළඟ')}
-                </button>
-
-                {['7', '8', '9'].map(key => (
-                  <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
-                    {key}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setMobileCalcField('qty')}
-                  className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${
-                    activeMobileCalcField === 'qty' ? 'bg-amber-500 text-white' : 'bg-black text-white'
-                  }`}
-                >
-                  {mobileFieldLabels.qty}
-                </button>
-
-                {['4', '5', '6'].map(key => (
-                  <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
-                    {key}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setMobileCalcField('price')}
-                  className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${
-                    activeMobileCalcField === 'price' ? 'bg-amber-500 text-white' : 'bg-black text-white'
-                  }`}
-                >
-                  {mobileFieldLabels.price}
-                </button>
-
-                {['1', '2', '3'].map(key => (
-                  <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
-                    {key}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => featureSettings.adjustments ? setMobileCalcField('adjustment') : handleMobileNextField()}
-                  className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${
-                    activeMobileCalcField === 'adjustment' ? 'bg-amber-500 text-white' : 'bg-black text-white'
-                  }`}
-                >
-                  {featureSettings.adjustments ? mobileFieldLabels.adjustment : text('More', 'තව')}
-                </button>
-
-                <button type="button" onClick={() => handleMobileNumberKey('0')} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
-                  0
-                </button>
-                <button type="button" onClick={() => handleMobileNumberKey('.')} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
-                  .
-                </button>
-                <button type="button" onClick={handleMobileBackspace} className="rounded-lg bg-black py-6 text-3xl font-black text-white active:scale-95">
-                  C
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePrintAndCommit}
-                  className="rounded-lg bg-emerald-500 py-6 text-sm font-black uppercase text-white active:scale-95"
-                >
-                  <Printer className="mx-auto mb-1 h-5 w-5" />
-                  {text('Print', 'ප්‍රින්ට්')}
-                </button>
-              </div>
-            </section>
-             
-            {/* SECTION 1: POS CALCULATOR & BILLING */}
-            <section className="hidden md:block bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm">
-              <div className="flex items-center gap-2.5 mb-4 border-b border-slate-100 dark:border-slate-800 pb-3">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                <h2 className="text-base font-extrabold tracking-wide uppercase text-slate-700 dark:text-slate-200">
-                  {t('calculatorTitle')}
-                </h2>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                
-                {/* POS Inputs Side */}
-                <div className="lg:col-span-8 flex flex-col gap-4">
-                  
-                  {/* Transaction Direction Selector */}
-                  <div className="order-3">
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                      {t('direction')}
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setPosBill(prev => ({ ...prev, type: 'purchase' }))}
-                        className={`flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border text-sm font-bold transition cursor-pointer ${
-                          posBill.type === 'purchase'
-                            ? 'bg-rose-500/10 border-rose-500 text-rose-500'
-                            : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-350'
-                        }`}
-                      >
-                        <ArrowDownLeft className="w-4 h-4" />
-                        <span>{t('purchase')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPosBill(prev => ({ ...prev, type: 'sale' }))}
-                        className={`flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border text-sm font-bold transition cursor-pointer ${
-                          posBill.type === 'sale'
-                            ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500'
-                            : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-350'
-                        }`}
-                      >
-                        <ArrowUpRight className="w-4 h-4" />
-                        <span>{t('sale')}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="order-1 grid grid-cols-2 gap-4 lg:grid-cols-4">
-                    <div className="col-span-2 lg:col-span-4">
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {text('Calculator Item', 'ගණනය කරන අයිතමය')}
-                      </label>
-                      <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-1 text-sm font-black dark:border-slate-800 dark:bg-slate-950">
+                      <div className="mt-2 grid grid-cols-2 gap-2 rounded-lg bg-slate-950/10 p-1 text-[11px] font-black">
                         <button
                           type="button"
                           onClick={() => switchPOSItemType('husk')}
                           aria-pressed={currentPosItemPreset.itemType === 'husk'}
-                          className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${
-                            currentPosItemPreset.itemType === 'husk'
+                          className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${currentPosItemPreset.itemType === 'husk'
                               ? 'bg-violet-700 text-white shadow-sm'
-                              : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
-                          }`}
+                              : 'bg-white/60 text-slate-700'
+                            }`}
                         >
-                          <PackageOpen className="h-4 w-4" />
-                          <span>{text('Coconut Husks / kg', 'පොල් ලෙලි / kg')}</span>
+                          <PackageOpen className="h-3.5 w-3.5" />
+                          <span>{text('Husks kg', 'ලෙලි kg')}</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => switchPOSItemType('coconut')}
                           aria-pressed={currentPosItemPreset.itemType === 'coconut'}
-                          className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${
-                            currentPosItemPreset.itemType === 'coconut'
+                          className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-2 transition active:scale-95 ${currentPosItemPreset.itemType === 'coconut'
                               ? 'bg-emerald-600 text-white shadow-sm'
-                              : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
-                          }`}
+                              : 'bg-white/60 text-slate-700'
+                            }`}
                         >
-                          <Sprout className="h-4 w-4" />
-                          <span>{text('Coconuts / pcs', 'පොල් / pcs')}</span>
+                          <Sprout className="h-3.5 w-3.5" />
+                          <span>{text('Coconuts pcs', 'පොල් pcs')}</span>
                         </button>
                       </div>
-                    </div>
 
-                    <div>
-                      <label htmlFor="pos-date" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {text('Date', 'දිනය')}
-                      </label>
-                      <input
-                        id="pos-date"
-                        type="date"
-                        value={posBill.date}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, date: e.target.value }))}
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor="pos-item" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {text('Item Description', 'අයිතම විස්තරය')}
-                      </label>
-                      <input
-                        id="pos-item"
-                        type="text"
-                        value={posBill.itemDescription}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
-                        onKeyDown={handlePOSKeyDown}
-                        placeholder={currentPosItemPreset.itemDescription}
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-
-                    {/* Quantity Input */}
-                    <div>
-                      <label htmlFor="pos-qty" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {posQtyLabel}
-                      </label>
-                      <input
-                        id="pos-qty"
-                        type="number"
-                        ref={qtyInputRef}
-                        value={posBill.qty}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, qty: e.target.value }))}
-                        onKeyDown={handlePOSKeyDown}
-                        onFocus={(e) => e.target.select()}
-                        placeholder="0"
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-
-                    {/* Unit Price Input */}
-                    <div>
-                      <label htmlFor="pos-price" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {posPriceLabel}
-                      </label>
-                      <input
-                        id="pos-price"
-                        type="number"
-                        step="0.01"
-                        ref={priceInputRef}
-                        value={posBill.price}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, price: e.target.value }))}
-                        onKeyDown={handlePOSKeyDown}
-                        onFocus={(e) => e.target.select()}
-                        placeholder="0.00"
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Manual collection of customer details */}
-                  <div className="order-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    {/* Name Input with Autocomplete Suggestion */}
-                    <div className="relative">
-                      <label htmlFor="pos-name" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {posBill.type === 'purchase' ? t('nameSupplier') : t('nameCustomer')}
-                      </label>
-                      <input
-                        id="pos-name"
-                        type="text"
-                        value={posBill.name}
-                        onChange={(e) => {
-                          setPosBill(prev => ({ ...prev, name: e.target.value }));
-                          setShowNameSuggestions(true);
-                        }}
-                        onFocus={() => setShowNameSuggestions(true)}
-                        onBlur={() => setTimeout(() => setShowNameSuggestions(false), 120)}
-                        onKeyDown={handleNameKeyDown}
-                        placeholder={posBill.type === 'purchase' ? 'e.g. Kamal' : 'e.g. Nimal'}
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                      {renderNameSuggestions()}
-                      {posBill.name && (
-                        <div className="text-xs font-bold mt-1.5 text-slate-455 dark:text-slate-400">
-                          {t('outstanding')}: <span className={outstanding > 0 ? 'text-amber-500 font-bold' : outstanding < 0 ? 'text-emerald-500 font-bold' : 'text-slate-400'}>
-                            {formatCurrency(outstanding)}
-                          </span>
-                          <span className="text-[10px] font-normal ml-1">
-                            ({posBill.type === 'purchase' ? t('outstandingWeOwe') : t('outstandingOwedToUs')})
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Phone Input */}
-                    {featureSettings.phone && (
-                    <div>
-                      <label htmlFor="pos-phone" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {t('phone')}
-                      </label>
-                      <input
-                        id="pos-phone"
-                        type="text"
-                        value={posBill.phone}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, phone: e.target.value }))}
-                        onKeyDown={handlePOSKeyDown}
-                        placeholder="e.g. 0771234567"
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-                    )}
-
-                    {/* Bill Number Input */}
-                    {featureSettings.billNumber && (
-                    <div>
-                      <label htmlFor="pos-billNumber" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        {t('billNumber')}
-                      </label>
-                      <input
-                        id="pos-billNumber"
-                        type="text"
-                        value={posBill.billNumber}
-                        onChange={(e) => setPosBill(prev => ({ ...prev, billNumber: e.target.value }))}
-                        onKeyDown={handlePOSKeyDown}
-                        placeholder="e.g. BILL-101"
-                        className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                      />
-                    </div>
-                    )}
-                  </div>
-
-                  {/* Adjustments Panel */}
-                  {featureSettings.adjustments && (
-                  <div className="order-4 p-4 bg-slate-50 dark:bg-slate-850/30 rounded-lg border border-slate-200/60 dark:border-slate-800/80">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="shrink-0">
-                        <span className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                          {t('adjustmentType')}
-                        </span>
-                        <div className="grid grid-cols-2 bg-slate-200 dark:bg-slate-900 p-0.5 rounded-lg gap-0.5 text-xs font-bold">
-                          <button
-                            type="button"
-                            onClick={() => setPosBill(prev => ({ ...prev, balanceType: 'add' }))}
-                            className={`px-4 py-2 rounded transition cursor-pointer ${
-                              posBill.balanceType === 'add'
-                                ? 'bg-white dark:bg-slate-800 shadow-sm text-emerald-500'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-350'
-                            }`}
-                          >
-                            {t('addPrevBalance')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPosBill(prev => ({ ...prev, balanceType: 'subtract' }))}
-                            className={`px-4 py-2 rounded transition cursor-pointer ${
-                              posBill.balanceType === 'subtract'
-                                ? 'bg-white dark:bg-slate-800 shadow-sm text-rose-500'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-350'
-                            }`}
-                          >
-                            {t('subAdvance')}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grow">
-                        <label htmlFor="pos-adjustment" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                          {t('adjustmentValue')}
-                        </label>
-                        <input
-                          id="pos-adjustment"
-                          type="number"
-                          ref={adjustmentInputRef}
-                          value={posBill.adjustment}
-                          onChange={(e) => setPosBill(prev => ({ ...prev, adjustment: e.target.value }))}
-                          onKeyDown={handlePOSKeyDown}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0.00"
-                          className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  )}
-
-                  {featureSettings.settlement && (
-                    <div className="order-5 grid grid-cols-1 gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                      <div>
-                        <label htmlFor="pos-settlement" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-300">
-                          {text('Settle Debt', 'ණය අඩු කරන්න')}
-                        </label>
-                        <input
-                          id="pos-settlement"
-                          type="number"
-                          step="0.01"
-                          value={posBill.settlement}
-                          onChange={(e) => setPosBill(prev => ({ ...prev, settlement: e.target.value }))}
-                          onKeyDown={handlePOSKeyDown}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0.00"
-                          className="w-full rounded-lg border border-amber-500/30 bg-white px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:bg-slate-900 dark:text-slate-100"
-                        />
-                      </div>
-                      <div className="rounded-lg bg-white px-3 py-2 text-xs font-bold dark:bg-slate-900">
-                        <span className="block text-[10px] uppercase text-slate-400">{text('After', 'ඉතිරි')}</span>
-                        <span className={remainingOutstanding > 0 ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}>
-                          {formatCurrency(remainingOutstanding)}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-
-                {/* POS Summary Panel */}
-                <div className="lg:col-span-4 flex flex-col justify-between p-4 bg-slate-50 dark:bg-emerald-950/10 rounded-xl border border-emerald-500/10">
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="font-bold text-slate-400 uppercase tracking-wider">{t('grossTotal')}:</span>
-                      <span className="font-bold text-lg text-slate-800 dark:text-slate-100">{formatCurrency(posGross)}</span>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-250 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 text-sm">
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-450 dark:text-slate-400">
-                        {t('formula')}
-                      </span>
-                      <span className="mt-1 block font-bold text-base text-slate-900 dark:text-slate-100">
-                        {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)} = {formatCurrency(posGross)}
-                      </span>
-                    </div>
-
-                    {posAdjustment > 0 && (
-                      <div className="flex justify-between items-center text-xs text-slate-400 font-bold uppercase">
-                        <span>
-                          {posBill.balanceType === 'add' ? t('addPrevBalance') : t('subAdvance')}:
-                        </span>
-                        <span className={posBill.balanceType === 'add' ? 'text-emerald-500 text-sm' : 'text-rose-500 text-sm'}>
-                          {posBill.balanceType === 'add' ? '+' : '-'} {formatCurrency(posAdjustment)}
-                        </span>
-                      </div>
-                    )}
-
-                    {posSettlement > 0 && (
-                      <div className="flex justify-between items-center text-xs text-amber-600 dark:text-amber-300 font-bold uppercase">
-                        <span>{text('Settlement', 'ණය අඩු')}:</span>
-                        <span>- {formatCurrency(posSettlement)}</span>
-                      </div>
-                    )}
-
-                    <div className="pt-4 border-t border-slate-200 dark:border-slate-850 flex flex-col">
-                      <span className="text-xs text-emerald-500 font-bold uppercase tracking-wider">
-                        {t('netAmount')}
-                      </span>
-                      <span className="text-3xl sm:text-4xl font-black tracking-tight text-slate-900 dark:text-slate-50 mt-1">
-                        {formatCurrency(posNet)}
-                      </span>
-                      {posBill.name && featureSettings.settlement && (
-                        <span className="mt-1 text-xs font-bold text-slate-400">
-                          {text('Remaining debt', 'ඉතිරි ණය')}: {formatCurrency(remainingOutstanding)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-8">
-                    <button
-                      type="button"
-                      onClick={handlePrintAndCommit}
-                      className="w-full flex items-center justify-center gap-2 py-4 px-5 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] text-white font-bold text-sm uppercase tracking-wider rounded-lg transition shadow-md shadow-emerald-500/10 focus:outline-none cursor-pointer"
-                    >
-                      <Printer className="w-4 h-4" />
-                      <span>{isPaymentOnly ? text('Save Payment', 'ගෙවීම සුරකින්න') : text('Print Bill', 'ප්‍රින්ට්')}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* SECTION 2: ACTIVE LEDGER BOOK */}
-            <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden">
-              
-              <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="w-4 h-4 text-emerald-500" />
-                  <h2 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                    {t('activeLedger')} <span className="text-[10px] text-slate-400 lowercase font-normal">({activeLedger.startDate})</span>
-                  </h2>
-                </div>
-                
-                <button
-                  onClick={() => setShowResetConfirm(true)}
-                  className="flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 transition cursor-pointer"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>{t('closePage')}</span>
-                </button>
-              </div>
-
-              {editingTxId && editTxForm && (
-                <div className="border-b border-amber-500/20 bg-amber-500/10 p-4">
-                  <form onSubmit={handleSaveEditedTransaction} className="space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">
-                        {text('Edit Bill', 'බිල එඩිට්')}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingTxId(null);
-                          setEditTxForm(null);
-                        }}
-                        className="rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-500 dark:border-slate-700"
-                      >
-                        {t('cancel')}
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <select
-                        value={editTxForm.type}
-                        onChange={(e) => setEditTxForm(prev => ({ ...prev, type: e.target.value }))}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                      >
-                        <option value="purchase">{t('purchase')}</option>
-                        <option value="sale">{t('sale')}</option>
-                      </select>
-                      <input
-                        type="text"
-                        value={editTxForm.name}
-                        onChange={(e) => setEditTxForm(prev => ({ ...prev, name: e.target.value }))}
-                        placeholder={text('Name', 'නම')}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                      />
-                      <input
-                        type="number"
-                        value={editTxForm.qty}
-                        onChange={(e) => setEditTxForm(prev => ({ ...prev, qty: e.target.value }))}
-                        placeholder={t('qty')}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={editTxForm.price}
-                        onChange={(e) => setEditTxForm(prev => ({ ...prev, price: e.target.value }))}
-                        placeholder={t('unitPrice')}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                      />
-                      {featureSettings.adjustments && (
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={editTxForm.adjustment}
-                          onChange={(e) => setEditTxForm(prev => ({ ...prev, adjustment: e.target.value }))}
-                          placeholder={t('adjustment')}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                        />
-                      )}
-                      {featureSettings.settlement && (
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={editTxForm.settlementAmount}
-                          onChange={(e) => setEditTxForm(prev => ({ ...prev, settlementAmount: e.target.value }))}
-                          placeholder={text('Settle', 'ණය අඩු')}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                        />
-                      )}
-                      {featureSettings.phone && (
+                      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_8.5rem] gap-2">
                         <input
                           type="text"
-                          value={editTxForm.phone}
-                          onChange={(e) => setEditTxForm(prev => ({ ...prev, phone: e.target.value }))}
-                          placeholder={t('phone')}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                          value={posBill.itemDescription}
+                          onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
+                          placeholder={currentPosItemPreset.itemDescription}
+                          className="min-w-0 rounded-lg border border-slate-300 bg-white/80 px-3 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-violet-600"
                         />
-                      )}
-                      {featureSettings.billNumber && (
                         <input
-                          type="text"
-                          value={editTxForm.billNumber}
-                          onChange={(e) => setEditTxForm(prev => ({ ...prev, billNumber: e.target.value }))}
-                          placeholder={t('billNumber')}
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                          type="date"
+                          value={posBill.date}
+                          onChange={(e) => setPosBill(prev => ({ ...prev, date: e.target.value }))}
+                          className="min-w-0 rounded-lg border border-slate-300 bg-white/80 px-2 py-2 text-xs font-black outline-none focus:ring-2 focus:ring-violet-600"
                         />
-                      )}
-                    </div>
-
-                    <input
-                      type="text"
-                      value={editTxForm.description}
-                      onChange={(e) => setEditTxForm(prev => ({ ...prev, description: e.target.value }))}
-                      placeholder={t('description')}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                    />
-
-                    <button
-                      type="submit"
-                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-black uppercase tracking-wide text-white"
-                    >
-                      <Save className="h-4 w-4" />
-                      <span>{text('Save Changes', 'සුරකින්න')}</span>
-                    </button>
-                  </form>
-                </div>
-              )}
-
-              {/* Manual Entry Form Grid */}
-              {featureSettings.manualEntries && (
-              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-850/10 border-b border-slate-200 dark:border-slate-800">
-                <form onSubmit={handleAddManualEntry} className="flex flex-col gap-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                      {t('manualEntry')}:
-                    </span>
-                    
-                    {/* Select Type Buttons */}
-                    <div className="grid grid-cols-3 bg-slate-200 dark:bg-slate-900 p-0.5 rounded-md text-[10px] font-bold gap-0.5 w-full sm:w-auto">
-                      <button
-                        type="button"
-                        onClick={() => setManualType('stock')}
-                        className={`px-2.5 py-1 rounded transition cursor-pointer ${
-                          manualType === 'stock' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {t('huskedStock')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setManualType('expense')}
-                        className={`px-2.5 py-1 rounded transition cursor-pointer ${
-                          manualType === 'expense' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {t('dailyCost')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setManualType('income')}
-                        className={`px-2.5 py-1 rounded transition cursor-pointer ${
-                          manualType === 'income' ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-                        }`}
-                      >
-                        {t('manualIncome')}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Form fields based on selected type */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-3 items-end">
-                    
-                    {manualType === 'stock' && (
-                      <>
-                        <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('huskedQty')}
-                          </label>
-                          <input
-                            type="number"
-                            value={manualStockQty}
-                            onChange={(e) => setManualStockQty(e.target.value)}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="e.g. 500"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('laborPrice')}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={manualStockLabor}
-                            onChange={(e) => setManualStockLabor(e.target.value)}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="e.g. 4.00"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                      </>
-                    )}
-
-                    {manualType === 'expense' && (
-                      <>
-                        <div className="sm:col-span-2">
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('expenseDesc')}
-                          </label>
-                          <input
-                            type="text"
-                            value={manualDesc}
-                            onChange={(e) => setManualDesc(e.target.value)}
-                            placeholder="e.g. Loading / Transport"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('amount')}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={manualAmount}
-                            onChange={(e) => setManualAmount(e.target.value)}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="0.00"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                      </>
-                    )}
-
-                    {manualType === 'income' && (
-                      <>
-                        <div className="sm:col-span-2">
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('incomeDesc')}
-                          </label>
-                          <input
-                            type="text"
-                            value={manualDesc}
-                            onChange={(e) => setManualDesc(e.target.value)}
-                            placeholder="e.g. Shell sales / Bag sales"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('amount')}
-                          </label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={manualAmount}
-                            onChange={(e) => setManualAmount(e.target.value)}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="0.00"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                      </>
-                    )}
-
-                    <div>
-                      <button
-                        type="submit"
-                        className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 bg-slate-850 hover:bg-slate-850 active:scale-[0.99] dark:bg-slate-700 dark:hover:bg-slate-650 text-white font-bold text-sm rounded transition cursor-pointer"
-                      >
-                        <Plus className="w-4 h-4" />
-                        <span>{t('addEntry')}</span>
-                      </button>
-                    </div>
-
-                  </div>
-                </form>
-              </div>
-              )}
-
-              {/* Physical CR Book Ledger Page */}
-              <div className="bg-[#fbf8ef] p-3 dark:bg-slate-950 sm:p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <span className="block text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                      {text('Current Page', 'වත්මන් පිටුව')}
-                    </span>
-                    <span className="text-sm font-black text-slate-900 dark:text-slate-100">
-                      {activeLedger.startDate}
-                    </span>
-                  </div>
-                  <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-black text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                    {(activeLedger.transactions || []).length} {text('rows', 'පේළි')}
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto rounded-lg border border-slate-300 bg-white shadow-inner dark:border-slate-700 dark:bg-slate-900">
-                  <table className="w-full min-w-[780px] border-collapse text-left text-[11px]">
-                    <thead>
-                      <tr className="border-b-2 border-slate-400 bg-slate-100 text-[10px] font-black uppercase tracking-wide text-slate-600 dark:border-slate-650 dark:bg-slate-850 dark:text-slate-300">
-                        <th className="w-12 border-r border-slate-300 px-2 py-2 text-center dark:border-slate-700">#</th>
-                        <th className="w-24 border-r border-slate-300 px-2 py-2 dark:border-slate-700">{text('Date', 'දිනය')}</th>
-                        <th className="border-r border-slate-300 px-2 py-2 dark:border-slate-700">{text('Name / Details', 'නම / විස්තර')}</th>
-                        <th className="w-20 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('qty')}</th>
-                        <th className="w-24 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('unitPrice')}</th>
-                        <th className="w-28 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('adjustment')}</th>
-                        <th className="w-28 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('netAmount')}</th>
-                        <th className="w-24 px-2 py-2 text-center">{t('actions')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeLedger.transactions.length === 0 ? (
-                        <tr>
-                          <td colSpan="8" className="px-4 py-10 text-center text-xs font-semibold text-slate-400">
-                            {text('Print a bill to write the first row', 'පළමු පේළියට බිලක් ප්‍රින්ට් කරන්න')}
-                          </td>
-                        </tr>
-                      ) : (
-                        activeLedger.transactions.map((tx, index) => {
-                          const adjustmentText = tx.type === 'credit_settlement'
-                            ? `- ${formatCurrency(getSettlement(tx))}`
-                            : tx.adjustment > 0
-                              ? `${tx.adjustmentType === 'add' ? '+' : '-'} ${formatCurrency(tx.adjustment)}`
-                              : '-';
-                          const netDisplay = tx.type === 'credit_settlement'
-                            ? formatCurrency(getSettlement(tx))
-                            : tx.type === 'stock_log'
-                              ? '-'
-                              : formatCurrency(tx.netAmount);
-                          const netClass = tx.type === 'sale' || tx.type === 'manual_income'
-                            ? 'text-emerald-600 dark:text-emerald-300'
-                            : tx.type === 'credit_settlement'
-                              ? 'text-amber-600 dark:text-amber-300'
-                              : tx.type === 'stock_log'
-                                ? 'text-slate-400'
-                                : 'text-rose-600 dark:text-rose-300';
-
-                          return (
-                            <tr
-                              key={`book-${tx.id}`}
-                              className="border-b border-slate-300 bg-white align-top font-semibold text-slate-800 last:border-b-0 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
-                            >
-                              <td className="border-r border-slate-200 px-2 py-2 text-center font-black text-slate-400 dark:border-slate-800">
-                                {index + 1}
-                              </td>
-                              <td className="border-r border-slate-200 px-2 py-2 font-bold text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                                <span className="block">{tx.date}</span>
-                                <span className="block text-[10px] font-semibold">{tx.time}</span>
-                              </td>
-                              <td className="border-r border-slate-200 px-2 py-2 dark:border-slate-800">
-                                <div className="font-black leading-snug">
-                                  {tx.name || tx.description}
-                                </div>
-                                <div className="mt-0.5 text-[10px] font-semibold leading-snug text-slate-500 dark:text-slate-400">
-                                  {tx.name ? tx.description : tx.type === 'stock_log' ? t('huskedStock') : tx.type === 'credit_settlement' ? text('Debt settlement', 'ණය අඩු කිරීම') : tx.billNumber || '-'}
-                                  {tx.billNumber && tx.name ? ` / ${tx.billNumber}` : ''}
-                                </div>
-                              </td>
-                              <td className="border-r border-slate-200 px-2 py-2 text-right font-black dark:border-slate-800">
-                                {tx.qty > 0 ? tx.qty.toLocaleString() : '-'}
-                              </td>
-                              <td className="border-r border-slate-200 px-2 py-2 text-right dark:border-slate-800">
-                                {tx.price > 0 ? formatCurrency(tx.price) : '-'}
-                              </td>
-                              <td className="border-r border-slate-200 px-2 py-2 text-right dark:border-slate-800">
-                                {adjustmentText}
-                              </td>
-                              <td className={`border-r border-slate-200 px-2 py-2 text-right font-black dark:border-slate-800 ${netClass}`}>
-                                {netDisplay}
-                              </td>
-                              <td className="px-2 py-2">
-                                <div className="flex items-center justify-center gap-1">
-                                  {isBillLike(tx) && (
-                                    <button
-                                      onClick={() => printReceipt(tx)}
-                                      className="rounded border border-slate-200 p-1 text-slate-500 hover:text-emerald-600 dark:border-slate-700"
-                                      title="Print Receipt"
-                                      aria-label="Print receipt"
-                                    >
-                                      <Printer className="h-3.5 w-3.5" />
-                                    </button>
-                                  )}
-                                  {isBillLike(tx) && (
-                                    <button
-                                      onClick={() => startEditTransaction(tx)}
-                                      className="rounded border border-slate-200 p-1 text-slate-500 hover:text-amber-600 dark:border-slate-700"
-                                      title="Edit Bill"
-                                      aria-label="Edit bill"
-                                    >
-                                      <Pencil className="h-3.5 w-3.5" />
-                                    </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
-                                    className="rounded border border-slate-200 p-1 text-slate-500 hover:text-rose-600 dark:border-slate-700"
-                                    title="Delete Entry"
-                                    aria-label="Delete entry"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Mobile Transaction Cards */}
-              <div className="hidden">
-                {activeLedger.transactions.length === 0 ? (
-                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 text-center text-sm text-slate-400">
-                    {t('historyEmpty')}
-                  </div>
-                ) : (
-                  activeLedger.transactions.map((tx) => (
-                    <div
-                      key={`mobile-${tx.id}`}
-                      className={`rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm ${
-                        tx.type === 'stock_log'
-                          ? 'bg-emerald-500/5 dark:bg-emerald-950/20'
-                          : 'bg-white dark:bg-slate-900'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-[11px] font-semibold text-slate-400">
-                            {tx.date} {tx.time}
-                          </p>
-                          <p className="mt-1 text-sm font-bold leading-snug break-words">
-                            {tx.description}
-                          </p>
-                          {(tx.name || tx.phone || tx.billNumber) && (
-                            <div className="text-[11px] text-slate-400 mt-1 space-y-0.5">
-                              {tx.name && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span> {tx.name}</div>}
-                              {tx.phone && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{t('phone')}:</span> {tx.phone}</div>}
-                              {tx.billNumber && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{t('billNumber')}:</span> {tx.billNumber}</div>}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          {isBillLike(tx) && (
-                            <button
-                              onClick={() => printReceipt(tx)}
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-emerald-500 transition cursor-pointer text-slate-550"
-                              title="Print Receipt"
-                              aria-label="Print receipt"
-                            >
-                              <Printer className="w-4 h-4" />
-                            </button>
-                          )}
-                          {isBillLike(tx) && (
-                            <button
-                              onClick={() => startEditTransaction(tx)}
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-amber-500 transition cursor-pointer text-slate-550"
-                              title="Edit bill"
-                              aria-label="Edit bill"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
-                            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-rose-500 transition cursor-pointer text-slate-555"
-                            title="Delete Entry"
-                            aria-label="Delete entry"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
                       </div>
 
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {tx.type === 'purchase' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-rose-500/10 text-rose-500 uppercase border border-rose-500/20">
-                            {t('purchase')}
+                      <div className="mt-2 text-right">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="rounded-full bg-slate-950/10 px-3 py-1 text-xs font-black uppercase text-slate-700">
+                            {mobileFieldLabels[activeMobileCalcField]}
                           </span>
-                        )}
-                        {tx.type === 'sale' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-emerald-500/10 text-emerald-500 uppercase border border-emerald-500/20">
-                            {t('sale')}
-                          </span>
-                        )}
-                        {tx.type === 'credit_settlement' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-300 uppercase border border-amber-500/20">
-                            {text('Settlement', 'ණය අඩු')}
-                          </span>
-                        )}
-                        {tx.type === 'stock_log' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-emerald-500/10 text-teal-600 dark:text-emerald-400 uppercase border border-emerald-500/25">
-                            {t('huskedStock')}
-                          </span>
-                        )}
-                        {tx.type === 'daily_cost' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 uppercase border border-rose-500/20">
-                            {t('dailyCost')}
-                          </span>
-                        )}
-                        {tx.type === 'manual_income' && (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-sky-500/10 text-sky-500 uppercase border border-sky-500/20">
-                            {t('manualIncome')}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                        <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
-                          <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('qty')}</span>
-                          <span className="font-bold text-slate-700 dark:text-slate-200">{tx.qty > 0 ? tx.qty.toLocaleString() : '-'}</span>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
-                          <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('unitPrice')}</span>
-                          <span className="font-bold text-slate-700 dark:text-slate-200">{tx.price > 0 ? formatCurrency(tx.price) : '-'}</span>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
-                          <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('adjustment')}</span>
-                          <span className={tx.adjustmentType === 'add' ? 'font-bold text-emerald-500' : 'font-bold text-rose-500'}>
-                            {tx.adjustment > 0 ? `${tx.adjustmentType === 'add' ? '+' : '-'} ${formatCurrency(tx.adjustment)}` : '-'}
-                          </span>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
-                          <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('amount')}</span>
-                          {tx.type === 'credit_settlement' ? (
-                            <span className="font-bold text-amber-600 dark:text-amber-300">- {formatCurrency(getSettlement(tx))}</span>
-                          ) : tx.type === 'sale' || tx.type === 'manual_income' ? (
-                            <span className="font-bold text-emerald-500">+ {formatCurrency(tx.netAmount)}</span>
-                          ) : tx.type === 'purchase' || tx.type === 'daily_cost' ? (
-                            <span className="font-bold text-rose-500">- {formatCurrency(tx.netAmount)}</span>
-                          ) : (
-                            <span className="font-bold">-</span>
+                          {posBill.name && (
+                            <span className="text-[11px] font-black text-amber-700">
+                              {outstanding !== remainingOutstanding ? (
+                                <>
+                                  {formatCurrency(outstanding)} ➜ <span className="text-amber-600 dark:text-amber-400 font-black">{formatCurrency(remainingOutstanding)}</span>
+                                </>
+                              ) : (
+                                formatCurrency(outstanding)
+                              )}
+                            </span>
                           )}
+                        </div>
+                        <div className="mt-1 min-h-[38px] truncate text-4xl font-black leading-none">
+                          {mobileDisplayValue}
+                        </div>
+                        <div className="mt-0.5 truncate text-2xl font-black leading-tight">
+                          {formatCurrency(posNet)}
+                        </div>
+                        <div className="mt-0.5 text-[11px] font-bold text-slate-600">
+                          {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)}
+                          {hasPosAdjustment ? ` - ${formatCurrency(posAdjustment)}` : ''}
                         </div>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
 
-              {/* Table Area */}
-              <div className="hidden">
-                <table className="w-full border-collapse text-left">
-                  <thead>
-                    <tr className="bg-slate-100 dark:bg-slate-850/50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                      <th className="px-6 py-3">{t('time')}</th>
-                      <th className="px-6 py-3">{t('description')}</th>
-                      <th className="px-6 py-3">{t('type')}</th>
-                      <th className="px-6 py-3 text-right">{t('qty')}</th>
-                      <th className="px-6 py-3 text-right">{t('unitPrice')}</th>
-                      <th className="px-6 py-3 text-right">{t('adjustment')}</th>
-                      <th className="px-6 py-3 text-right text-emerald-500">{t('income')}</th>
-                      <th className="px-6 py-3 text-right text-rose-500">{t('expense')}</th>
-                      <th className="px-6 py-3 text-center">{t('actions')}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-150 dark:divide-slate-800/80">
-                    {activeLedger.transactions.length === 0 ? (
-                      <tr>
-                        <td colSpan="9" className="text-center py-10 text-xs text-slate-400">
-                          {t('historyEmpty')}
-                        </td>
-                      </tr>
-                    ) : (
-                      activeLedger.transactions.map((tx) => (
-                        <tr 
-                          key={tx.id} 
-                          className={`hover:bg-slate-50 dark:hover:bg-slate-850/40 transition-colors text-xs ${
-                            tx.type === 'stock_log' ? 'opacity-85 bg-emerald-500/5' : ''
+                    <div className="mobile-calc-keypad grid min-h-0 grid-cols-4 gap-2 p-2">
+                      <button
+                        type="button"
+                        onClick={handleMobileClearAll}
+                        className="rounded-lg bg-rose-300 px-2 py-4 text-2xl font-black text-white active:scale-95"
+                      >
+                        AC
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleMobileClearField}
+                        className="rounded-lg bg-rose-300 px-2 py-4 text-2xl font-black text-white active:scale-95"
+                      >
+                        C
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleMobilePercent}
+                        className="rounded-lg bg-black px-2 py-4 text-2xl font-black text-white active:scale-95"
+                      >
+                        %
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleMobileNextField}
+                        className="rounded-lg bg-black px-2 py-4 text-lg font-black text-white active:scale-95"
+                      >
+                        {text('Next', 'ඊළඟ')}
+                      </button>
+
+                      {['7', '8', '9'].map(key => (
+                        <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
+                          {key}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setMobileCalcField('qty')}
+                        className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${activeMobileCalcField === 'qty' ? 'bg-amber-500 text-white' : 'bg-black text-white'
                           }`}
-                        >
-                          <td className="px-6 py-3 whitespace-nowrap text-slate-400 font-medium">
-                            {tx.date} {tx.time}
-                          </td>
-                          <td className="px-6 py-3">
-                            <div className="font-semibold capitalize max-w-xs truncate text-slate-800 dark:text-slate-200" title={tx.description}>
-                              {tx.description}
-                            </div>
-                            {(tx.name || tx.phone || tx.billNumber) && (
-                              <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5 font-normal">
-                                {tx.name && <div><span className="font-medium text-slate-500 dark:text-slate-450">{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span> {tx.name}</div>}
-                                {tx.phone && <div><span className="font-medium text-slate-500 dark:text-slate-450">{t('phone')}:</span> {tx.phone}</div>}
-                                {tx.billNumber && <div><span className="font-medium text-slate-500 dark:text-slate-450">{t('billNumber')}:</span> {tx.billNumber}</div>}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-6 py-3 whitespace-nowrap">
-                            {tx.type === 'purchase' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-rose-500/10 text-rose-500 uppercase border border-rose-500/20">
-                                {t('purchase')}
-                              </span>
-                            )}
-                            {tx.type === 'sale' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-500 uppercase border border-emerald-500/20">
-                                {t('sale')}
-                              </span>
-                            )}
-                            {tx.type === 'credit_settlement' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-amber-500/10 text-amber-600 dark:text-amber-300 uppercase border border-amber-500/20">
-                                {text('Settlement', 'ණය අඩු')}
-                              </span>
-                            )}
-                            {tx.type === 'stock_log' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-500/10 text-teal-600 dark:text-emerald-400 uppercase border border-emerald-500/25">
-                                {t('huskedStock')}
-                              </span>
-                            )}
-                            {tx.type === 'daily_cost' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 uppercase border border-rose-500/20">
-                                {t('dailyCost')}
-                              </span>
-                            )}
-                            {tx.type === 'manual_income' && (
-                              <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-sky-500/10 text-sky-500 uppercase border border-sky-500/20">
-                                {t('manualIncome')}
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-6 py-3 text-right font-medium text-slate-700 dark:text-slate-200">
-                            {tx.qty > 0 ? tx.qty.toLocaleString() : '-'}
-                          </td>
-                          <td className="px-6 py-3 text-right font-medium text-slate-405">
-                            {tx.price > 0 ? formatCurrency(tx.price) : '-'}
-                          </td>
-                          <td className="px-6 py-3 text-right font-medium text-slate-405">
-                            {tx.adjustment > 0 ? (
-                              <span className={tx.adjustmentType === 'add' ? 'text-emerald-500' : 'text-rose-500'}>
-                                {tx.adjustmentType === 'add' ? '+' : '-'} {formatCurrency(tx.adjustment)}
-                              </span>
-                            ) : '-'}
-                          </td>
-                          <td className="px-6 py-3 text-right font-bold text-emerald-500">
-                            {tx.type === 'sale' || tx.type === 'manual_income' ? formatCurrency(tx.netAmount) : '-'}
-                          </td>
-                          <td className="px-6 py-3 text-right font-bold text-rose-500">
-                            {tx.type === 'purchase' || tx.type === 'daily_cost' ? formatCurrency(tx.netAmount) : tx.type === 'credit_settlement' ? formatCurrency(getSettlement(tx)) : '-'}
-                          </td>
-                          <td className="px-6 py-3 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              {isBillLike(tx) && (
-                                <button
-                                  onClick={() => printReceipt(tx)}
-                                  className="p-1 hover:text-emerald-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
-                                  title="Print Receipt"
-                                >
-                                  <Printer className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                              {isBillLike(tx) && (
-                                <button
-                                  onClick={() => startEditTransaction(tx)}
-                                  className="p-1 hover:text-amber-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
-                                  title="Edit Bill"
-                                >
-                                  <Pencil className="w-3.5 h-3.5" />
-                                </button>
-                              )}
+                      >
+                        {mobileFieldLabels.qty}
+                      </button>
+
+                      {['4', '5', '6'].map(key => (
+                        <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
+                          {key}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setMobileCalcField('price')}
+                        className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${activeMobileCalcField === 'price' ? 'bg-amber-500 text-white' : 'bg-black text-white'
+                          }`}
+                      >
+                        {mobileFieldLabels.price}
+                      </button>
+
+                      {['1', '2', '3'].map(key => (
+                        <button key={key} type="button" onClick={() => handleMobileNumberKey(key)} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
+                          {key}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => featureSettings.adjustments ? setMobileCalcField('adjustment') : handleMobileNextField()}
+                        className={`rounded-lg py-6 text-sm font-black uppercase active:scale-95 ${activeMobileCalcField === 'adjustment' ? 'bg-amber-500 text-white' : 'bg-black text-white'
+                          }`}
+                      >
+                        {featureSettings.adjustments ? mobileFieldLabels.adjustment : text('More', 'තව')}
+                      </button>
+
+                      <button type="button" onClick={() => handleMobileNumberKey('0')} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
+                        0
+                      </button>
+                      <button type="button" onClick={() => handleMobileNumberKey('.')} className="rounded-lg bg-black py-6 text-4xl font-black text-white active:scale-95">
+                        .
+                      </button>
+                      <button type="button" onClick={handleMobileBackspace} className="rounded-lg bg-black py-6 text-3xl font-black text-white active:scale-95">
+                        C
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePrintAndCommit}
+                        className="rounded-lg bg-emerald-500 py-6 text-sm font-black uppercase text-white active:scale-95"
+                      >
+                        <Printer className="mx-auto mb-1 h-5 w-5" />
+                        {text('Print', 'ප්‍රින්ට්')}
+                      </button>
+                    </div>
+                  </section>
+
+                  {/* SECTION 1: POS CALCULATOR & BILLING */}
+                  <section className="hidden md:block bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm">
+                    <div className="flex items-center gap-2.5 mb-4 border-b border-slate-100 dark:border-slate-800 pb-3">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      <h2 className="text-base font-extrabold tracking-wide uppercase text-slate-700 dark:text-slate-200">
+                        {t('calculatorTitle')}
+                      </h2>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+                      {/* POS Inputs Side */}
+                      <div className="lg:col-span-8 flex flex-col gap-4">
+
+                        {/* Transaction Direction Selector */}
+                        <div className="order-3">
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                            {t('direction')}
+                          </label>
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setPosBill(prev => ({ ...prev, type: 'purchase' }))}
+                              className={`flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border text-sm font-bold transition cursor-pointer ${posBill.type === 'purchase'
+                                  ? 'bg-rose-500/10 border-rose-500 text-rose-500'
+                                  : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-350'
+                                }`}
+                            >
+                              <ArrowDownLeft className="w-4 h-4" />
+                              <span>{t('purchase')}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPosBill(prev => ({ ...prev, type: 'sale' }))}
+                              className={`flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border text-sm font-bold transition cursor-pointer ${posBill.type === 'sale'
+                                  ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500'
+                                  : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-350'
+                                }`}
+                            >
+                              <ArrowUpRight className="w-4 h-4" />
+                              <span>{t('sale')}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="order-1 grid grid-cols-2 gap-4 lg:grid-cols-4">
+                          <div className="col-span-2 lg:col-span-4">
+                            <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {text('Calculator Item', 'ගණනය කරන අයිතමය')}
+                            </label>
+                            <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-1 text-sm font-black dark:border-slate-800 dark:bg-slate-950">
                               <button
-                                  onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
-                                  className="p-1 hover:text-rose-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
-                                  title="Delete Entry"
+                                type="button"
+                                onClick={() => switchPOSItemType('husk')}
+                                aria-pressed={currentPosItemPreset.itemType === 'husk'}
+                                className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${currentPosItemPreset.itemType === 'husk'
+                                    ? 'bg-violet-700 text-white shadow-sm'
+                                    : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
+                                  }`}
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <PackageOpen className="h-4 w-4" />
+                                <span>{text('Coconut Husks / kg', 'පොල් ලෙලි / kg')}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => switchPOSItemType('coconut')}
+                                aria-pressed={currentPosItemPreset.itemType === 'coconut'}
+                                className={`flex items-center justify-center gap-2 rounded-md px-3 py-2.5 transition cursor-pointer ${currentPosItemPreset.itemType === 'coconut'
+                                    ? 'bg-emerald-600 text-white shadow-sm'
+                                    : 'text-slate-500 hover:bg-white dark:text-slate-350 dark:hover:bg-slate-900'
+                                  }`}
+                              >
+                                <Sprout className="h-4 w-4" />
+                                <span>{text('Coconuts / pcs', 'පොල් / pcs')}</span>
                               </button>
                             </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                          </div>
 
-              {/* Structured Table Running Footer */}
-              <div className="bg-slate-50 dark:bg-slate-850/10 p-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-bold">
-                <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
-                  <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('coconutsCollected')}</span>
-                  <span className="text-lg font-extrabold text-rose-500">{totalPurchasedCoconuts.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
-                  <span className="text-[10px] font-semibold text-slate-400">{formatCurrency(totalPurchaseAmount)}</span>
-                </div>
-                <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
-                  <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('coconutsSold')}</span>
-                  <span className="text-lg font-extrabold text-emerald-500">{totalSoldCoconuts.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
-                  <span className="text-[10px] font-semibold text-slate-400">{formatCurrency(totalSaleAmount)}</span>
-                </div>
-                <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
-                  <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('huskedStocks')}</span>
-                  <span className="text-lg font-extrabold text-teal-600 dark:text-emerald-400">{activeLedger.huskedCoconutsCount.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
-                  <span className="text-[10px] font-semibold text-slate-400">Labor: {formatCurrency(totalHuskingLabor)}</span>
-                </div>
-                <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
-                  <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('ledgerBalance')}</span>
-                  <span className="text-lg font-extrabold text-slate-850 dark:text-slate-100">
-                    {formatCurrency(manualAndSalesIncome - totalExpenses)}
-                  </span>
-                  <span className="text-[9px] font-normal text-slate-400">Pre husk sales</span>
-                </div>
-              </div>
+                          <div>
+                            <label htmlFor="pos-date" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {text('Date', 'දිනය')}
+                            </label>
+                            <input
+                              id="pos-date"
+                              type="date"
+                              value={posBill.date}
+                              onChange={(e) => setPosBill(prev => ({ ...prev, date: e.target.value }))}
+                              className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                            />
+                          </div>
 
-              {featureSettings.creditLedger && (
-                <div className="border-t border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Wallet className="h-4 w-4 text-amber-500" />
-                      <h3 className="text-xs font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                        {text('Customer / Supplier Ledger', 'ණය ලෙජරය')}
-                      </h3>
-                    </div>
-                    <span className="text-[10px] font-bold text-slate-400">
-                      {partyBalances.length}
-                    </span>
-                  </div>
+                          <div>
+                            <label htmlFor="pos-item" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {text('Item Description', 'අයිතම විස්තරය')}
+                            </label>
+                            <input
+                              id="pos-item"
+                              type="text"
+                              value={posBill.itemDescription}
+                              onChange={(e) => setPosBill(prev => ({ ...prev, itemDescription: e.target.value }))}
+                              onKeyDown={handlePOSKeyDown}
+                              placeholder={currentPosItemPreset.itemDescription}
+                              className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                            />
+                          </div>
 
-                  {partyBalances.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs font-semibold text-slate-400 dark:border-slate-700">
-                      {text('No open debt', 'විවෘත ණය නැත')}
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                      {partyBalances.slice(0, 9).map(item => (
-                        <div key={`${item.type}-${item.name}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-850/20">
-                          <div className="min-w-0">
-                            <span className="block truncate font-black text-slate-800 dark:text-slate-100">{item.name}</span>
-                            <span className="text-[10px] font-semibold text-slate-400">
-                              {item.type === 'purchase' ? text('We owe', 'අපි ගෙවිය යුතු') : text('Owes us', 'අපට ලැබිය යුතු')}
+                          {/* Quantity Input */}
+                          <div>
+                            <label htmlFor="pos-qty" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {posQtyLabel}
+                            </label>
+                            <input
+                              id="pos-qty"
+                              type="number"
+                              ref={qtyInputRef}
+                              value={posBill.qty}
+                              onChange={(e) => setPosBill(prev => ({ ...prev, qty: e.target.value }))}
+                              onKeyDown={handlePOSKeyDown}
+                              onFocus={(e) => e.target.select()}
+                              placeholder="0"
+                              className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                            />
+                          </div>
+
+                          {/* Unit Price Input */}
+                          <div>
+                            <label htmlFor="pos-price" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {posPriceLabel}
+                            </label>
+                            <input
+                              id="pos-price"
+                              type="number"
+                              step="0.01"
+                              ref={priceInputRef}
+                              value={posBill.price}
+                              onChange={(e) => setPosBill(prev => ({ ...prev, price: e.target.value }))}
+                              onKeyDown={handlePOSKeyDown}
+                              onFocus={(e) => e.target.select()}
+                              placeholder="0.00"
+                              className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Manual collection of customer details */}
+                        <div className="order-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          {/* Name Input with Autocomplete Suggestion */}
+                          <div className="relative">
+                            <label htmlFor="pos-name" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                              {posBill.type === 'purchase' ? t('nameSupplier') : t('nameCustomer')}
+                            </label>
+                            <input
+                              id="pos-name"
+                              type="text"
+                              value={posBill.name}
+                              onChange={(e) => {
+                                setPosBill(prev => ({ ...prev, name: e.target.value }));
+                                setShowNameSuggestions(true);
+                              }}
+                              onFocus={() => setShowNameSuggestions(true)}
+                              onBlur={() => setTimeout(() => setShowNameSuggestions(false), 120)}
+                              onKeyDown={handleNameKeyDown}
+                              placeholder={posBill.type === 'purchase' ? 'e.g. Kamal' : 'e.g. Nimal'}
+                              className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                            />
+                            {renderNameSuggestions()}
+                            {posBill.name && (
+                              <div className="text-xs font-bold mt-1.5 text-slate-455 dark:text-slate-400">
+                                {t('outstanding')}: <span className={outstanding > 0 ? 'text-amber-500 font-bold' : outstanding < 0 ? 'text-emerald-500 font-bold' : 'text-slate-400'}>
+                                  {formatCurrency(outstanding)}
+                                </span>
+                                <span className="text-[10px] font-normal ml-1">
+                                  ({posBill.type === 'purchase' ? t('outstandingWeOwe') : t('outstandingOwedToUs')})
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Phone Input */}
+                          {featureSettings.phone && (
+                            <div>
+                              <label htmlFor="pos-phone" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                                {t('phone')}
+                              </label>
+                              <input
+                                id="pos-phone"
+                                type="text"
+                                value={posBill.phone}
+                                onChange={(e) => setPosBill(prev => ({ ...prev, phone: e.target.value }))}
+                                onKeyDown={handlePOSKeyDown}
+                                placeholder="e.g. 0771234567"
+                                className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                              />
+                            </div>
+                          )}
+
+                          {/* Bill Number Input */}
+                          {featureSettings.billNumber && (
+                            <div>
+                              <label htmlFor="pos-billNumber" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                                {t('billNumber')}
+                              </label>
+                              <input
+                                id="pos-billNumber"
+                                type="text"
+                                inputMode="numeric"
+                                value={posBill.billNumber}
+                                onChange={(e) => setPosBill(prev => ({ ...prev, billNumber: e.target.value }))}
+                                onBlur={(e) => setPosBill(prev => ({ ...prev, billNumber: formatBillNumber(e.target.value) }))}
+                                onKeyDown={handlePOSKeyDown}
+                                placeholder={`Auto: ${getNextBillNumber()}`}
+                                className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-base font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Adjustments Panel */}
+                        {featureSettings.adjustments && (
+                          <div className="order-4 p-4 bg-slate-50 dark:bg-slate-850/30 rounded-lg border border-slate-200/60 dark:border-slate-800/80">
+                            <div className="flex flex-col justify-between gap-4">
+                              <div className="grow">
+                                <label htmlFor="pos-adjustment" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
+                                  {text('Debt Deduction / Adjustment (ණය අඩු කිරීම)', 'ණය අඩු කිරීම / ගැලපුම්')}
+                                </label>
+                                <input
+                                  id="pos-adjustment"
+                                  type="number"
+                                  ref={adjustmentInputRef}
+                                  value={posBill.adjustment}
+                                  onChange={(e) => setPosBill(prev => ({ ...prev, adjustment: e.target.value }))}
+                                  onKeyDown={handlePOSKeyDown}
+                                  onFocus={(e) => e.target.select()}
+                                  placeholder="0.00"
+                                  className="w-full px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-750 bg-transparent text-lg font-bold focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                                />
+                                {posBill.name && outstanding !== 0 && (
+                                  <div className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 p-2.5 rounded-lg border border-amber-200/40">
+                                    {outstanding > 0 ? (
+                                      posBill.type === 'sale'
+                                        ? text(`Customer owes ${formatCurrency(outstanding)}. Enter amount to settle.`, `පාරිභෝගිකයාගෙන් රු. ${outstanding.toLocaleString()} ක් ලැබීමට ඇත. අඩු කිරීමට මුදල ඇතුළත් කරන්න.`)
+                                        : text(`We owe supplier ${formatCurrency(outstanding)}. Enter amount to settle.`, `සැපයුම්කරුට රු. ${outstanding.toLocaleString()} ක් ගෙවීමට ඇත. අඩු කිරීමට මුදල ඇතුළත් කරන්න.`)
+                                    ) : (
+                                      posBill.type === 'sale'
+                                        ? text(`We owe customer ${formatCurrency(Math.abs(outstanding))} (Advance).`, `පාරිභෝගිකයාට රු. ${Math.abs(outstanding).toLocaleString()} ක අත්තිකාරමක් ඇත.`)
+                                        : text(`Supplier owes us ${formatCurrency(Math.abs(outstanding))} (Advance).`, `සැපයුම්කරුගෙන් රු. ${Math.abs(outstanding).toLocaleString()} ක අත්තිකාරමක් ලැබීමට ඇත.`)
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {featureSettings.settlement && (
+                          <div className="order-5 grid grid-cols-1 gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                            <div>
+                              <label htmlFor="pos-settlement" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-300">
+                                {text('Settle Debt', 'ණය අඩු කරන්න')}
+                              </label>
+                              <input
+                                id="pos-settlement"
+                                type="number"
+                                step="0.01"
+                                value={posBill.settlement}
+                                onChange={(e) => setPosBill(prev => ({ ...prev, settlement: e.target.value }))}
+                                onKeyDown={handlePOSKeyDown}
+                                onFocus={(e) => e.target.select()}
+                                placeholder="0.00"
+                                className="w-full rounded-lg border border-amber-500/30 bg-white px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            </div>
+                            <div className="rounded-lg bg-white px-3 py-2 text-xs font-bold dark:bg-slate-900">
+                              <span className="block text-[10px] uppercase text-slate-400">{text('After', 'ඉතිරි')}</span>
+                              <span className={remainingOutstanding > 0 ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}>
+                                {formatCurrency(remainingOutstanding)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+
+                      {/* POS Summary Panel */}
+                      <div className="lg:col-span-4 flex flex-col justify-between p-4 bg-slate-50 dark:bg-emerald-950/10 rounded-xl border border-emerald-500/10">
+                        <div className="space-y-4">
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="font-bold text-slate-400 uppercase tracking-wider">{t('grossTotal')}:</span>
+                            <span className="font-bold text-lg text-slate-800 dark:text-slate-100">{formatCurrency(posGross)}</span>
+                          </div>
+
+                          <div className="rounded-lg border border-slate-250 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 text-sm">
+                            <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-450 dark:text-slate-400">
+                              {t('formula')}
+                            </span>
+                            <span className="mt-1 block font-bold text-base text-slate-900 dark:text-slate-100">
+                              {posQty.toLocaleString()} {posItemUnit} x {formatCurrency(posPrice)} = {formatCurrency(posGross)}
                             </span>
                           </div>
-                          <span className="shrink-0 font-black text-amber-600 dark:text-amber-300">{formatCurrency(item.amount)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
 
-              {/* SECTION 3: PROFIT & LOSS SUMMARY */}
-              <div className="p-4 bg-slate-100 dark:bg-slate-850/10 border-t border-slate-200 dark:border-slate-800">
-                
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  <h2 className="text-sm font-bold tracking-wide uppercase text-slate-700 dark:text-slate-200">
-                    {t('profitLossTitle')}
-                  </h2>
-                </div>
+                          {posAdjustment > 0 && (
+                            <div className="flex justify-between items-center text-xs text-slate-400 font-bold uppercase">
+                              <span>
+                                {posBill.balanceType === 'add' ? t('addPrevBalance') : t('subAdvance')}:
+                              </span>
+                              <span className={posBill.balanceType === 'add' ? 'text-emerald-500 text-sm' : 'text-rose-500 text-sm'}>
+                                {posBill.balanceType === 'add' ? '+' : '-'} {formatCurrency(posAdjustment)}
+                              </span>
+                            </div>
+                          )}
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                  
-                  {/* Calculations Columns */}
-                  <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {/* Expense Box */}
-                    <div className="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">{t('expenseSide')}</span>
-                      </div>
-                      <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
-                        <span className="text-xl font-black text-rose-500">
-                          {formatCurrency(totalExpenses)}
-                        </span>
-                        <div className="mt-2 space-y-1 text-[11px] font-semibold text-slate-450 dark:text-slate-400">
-                          <div className="flex justify-between gap-3">
-                            <span>{t('qty')}</span>
-                            <span>{totalPurchasedCoconuts.toLocaleString()} pcs / {formatCurrency(totalPurchaseAmount)}</span>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <span>{t('laborPrice')}</span>
-                            <span>{formatCurrency(totalHuskingLabor)}</span>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <span>{t('dailyCost')}</span>
-                            <span>{formatCurrency(totalOtherCosts)}</span>
+                          {posSettlement > 0 && (
+                            <div className="flex justify-between items-center text-xs text-amber-600 dark:text-amber-300 font-bold uppercase">
+                              <span>{text('Settlement', 'ණය අඩු')}:</span>
+                              <span>- {formatCurrency(posSettlement)}</span>
+                            </div>
+                          )}
+
+                          <div className="pt-4 border-t border-slate-200 dark:border-slate-850 flex flex-col">
+                            <span className="text-xs text-emerald-500 font-bold uppercase tracking-wider">
+                              {t('netAmount')}
+                            </span>
+                            <span className="text-3xl sm:text-4xl font-black tracking-tight text-slate-900 dark:text-slate-50 mt-1">
+                              {formatCurrency(posNet)}
+                            </span>
+                            {posBill.name && featureSettings.settlement && (
+                              <span className="mt-1 text-xs font-bold text-slate-400">
+                                {text('Remaining debt', 'ඉතිරි ණය')}: {formatCurrency(remainingOutstanding)}
+                              </span>
+                            )}
                           </div>
                         </div>
-                      </div>
-                    </div>
 
-                    {/* Income Box */}
-                    <div className="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">{t('incomeSide')}</span>
-                      </div>
-                      <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
-                        <span className="text-xl font-black text-emerald-500">
-                          {formatCurrency(finalTotalIncome)}
-                        </span>
-                        <div className="mt-2 space-y-1 text-[11px] font-semibold text-slate-450 dark:text-slate-400">
-                          <div className="flex justify-between gap-3">
-                            <span>{t('coconutsSold')}</span>
-                            <span>{totalSoldCoconuts.toLocaleString()} pcs / {formatCurrency(totalSaleAmount)}</span>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <span>{t('coProductIncome')}</span>
-                            <span>{formatCurrency(totalCoProductIncome)}</span>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <span>{t('manualIncome')}</span>
-                            <span>{formatCurrency(totalManualIncome)}</span>
-                          </div>
+                        <div className="mt-8">
+                          <button
+                            type="button"
+                            onClick={handlePrintAndCommit}
+                            className="w-full flex items-center justify-center gap-2 py-4 px-5 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] text-white font-bold text-sm uppercase tracking-wider rounded-lg transition shadow-md shadow-emerald-500/10 focus:outline-none cursor-pointer"
+                          >
+                            <Printer className="w-4 h-4" />
+                            <span>{isPaymentOnly ? text('Save Payment', 'ගෙවීම සුරකින්න') : text('Print Bill', 'ප්‍රින්ට්')}</span>
+                          </button>
                         </div>
                       </div>
                     </div>
+                  </section>
 
-                    {/* Co-Product Inputs */}
-                    {featureSettings.coProducts && (
-                    <div className="sm:col-span-2 p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
-                        <span className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase tracking-wider">
-                          {t('coProductIncome')}
-                        </span>
-                        <span className="text-xs font-bold text-emerald-500">
-                          + {formatCurrency(totalCoProductIncome)}
-                        </span>
+                  {/* SECTION 2: ACTIVE LEDGER BOOK */}
+                  <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm overflow-hidden">
+
+                    <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <BookOpen className="w-4 h-4 text-emerald-500" />
+                        <h2 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                          {t('activeLedger')} <span className="text-[10px] text-slate-400 lowercase font-normal">({activeLedger.startDate})</span>
+                        </h2>
                       </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label htmlFor="husk-type-1" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('huskType1')}
-                          </label>
-                          <input
-                            id="husk-type-1"
-                            type="number"
-                            step="0.01"
-                            value={coProducts.huskType1}
-                            onChange={(e) => setCoProducts(prev => ({ ...prev, huskType1: e.target.value }))}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="0.00"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-transparent text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor="husk-type-2" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-                            {t('huskType2')}
-                          </label>
-                          <input
-                            id="husk-type-2"
-                            type="number"
-                            step="0.01"
-                            value={coProducts.huskType2}
-                            onChange={(e) => setCoProducts(prev => ({ ...prev, huskType2: e.target.value }))}
-                            onFocus={(e) => e.target.select()}
-                            placeholder="0.00"
-                            className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-transparent text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    )}
 
-                  </div>
-
-                  {/* Prominent Profit Card */}
-                  <div className="p-5 bg-gradient-to-br from-emerald-800 via-teal-800 to-slate-900 text-white rounded-lg flex flex-col justify-between shadow-lg shadow-emerald-500/10">
-                    <div className="space-y-0.5">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-100">
-                        {t('netProfitLoss')}
-                      </span>
-                    </div>
-
-                    <div className="my-4">
-                      <span className="text-3xl font-extrabold tracking-tight">
-                        {formatCurrency(netProfit)}
-                      </span>
-                    </div>
-
-                    <div>
                       <button
                         onClick={() => setShowResetConfirm(true)}
-                        className="w-full py-2 bg-slate-900 hover:bg-slate-950 active:scale-[0.99] text-white font-bold text-xs uppercase tracking-wider rounded transition shadow cursor-pointer"
+                        className="flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/20 transition cursor-pointer"
                       >
-                        {t('closePage')}
+                        <RotateCcw className="w-3 h-3" />
+                        <span>{t('closePage')}</span>
                       </button>
                     </div>
-                  </div>
 
-                </div>
-
-              </div>
-            </section>
-              </>
-            ) : (
-              <>
-                <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                  <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3 dark:border-slate-800">
-                    <div className="flex items-center gap-2">
-                      <Calculator className="h-4 w-4 text-emerald-500" />
-                      <h2 className="text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                        {text('Husk Calculator', 'ලෙලි ගණනය')}
-                      </h2>
-                    </div>
-                    <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
-                      {activeHuskLedger.startDate}
-                    </span>
-                  </div>
-
-                  <form onSubmit={handleSaveHuskRecord} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                          {text('Husk Qty', 'ලෙලි ගණන')}
-                        </label>
-                        <input
-                          type="number"
-                          value={huskForm.qty}
-                          onChange={(e) => setHuskForm(prev => ({ ...prev, qty: e.target.value }))}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0"
-                          className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                          {text('Hauling Rate', 'අදින මිල')}
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={huskForm.haulingRate}
-                          onChange={(e) => setHuskForm(prev => ({ ...prev, haulingRate: e.target.value }))}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0.00"
-                          className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
-                      <div className="flex items-center justify-between text-xs font-bold">
-                        <span className="uppercase text-slate-400">{text('Subtotal', 'උප එකතුව')}</span>
-                        <span className="text-base text-slate-900 dark:text-slate-100">{formatCurrency(huskSubtotal)}</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                          {text('Cutting', 'කපන්න')}
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={huskForm.cuttingWages}
-                          onChange={(e) => setHuskForm(prev => ({ ...prev, cuttingWages: e.target.value }))}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0.00"
-                          className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                          {text('Drying', 'වේලන')}
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={huskForm.dryingWages}
-                          onChange={(e) => setHuskForm(prev => ({ ...prev, dryingWages: e.target.value }))}
-                          onFocus={(e) => e.target.select()}
-                          placeholder="0.00"
-                          className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                        {text('Weight of 1,000 Husks', 'ලෙලි 1000ක කිලෝ')}
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={huskForm.weight1000}
-                        onChange={(e) => setHuskForm(prev => ({ ...prev, weight1000: e.target.value }))}
-                        onFocus={(e) => e.target.select()}
-                        placeholder="0.00"
-                        className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-3">
-                        <span className="block text-[10px] font-bold uppercase text-rose-500">{text('Expense', 'ගිය වියදම')}</span>
-                        <span className="mt-1 block text-xl font-black text-rose-600 dark:text-rose-300">{formatCurrency(huskTotalExpense)}</span>
-                      </div>
-                      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
-                        <span className="block text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-300">{text('Avg Weight', 'ඇවරේජ් බර')}</span>
-                        <span className="mt-1 block text-xl font-black text-emerald-700 dark:text-emerald-200">{huskAverageWeight.toFixed(3)} kg</span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="submit"
-                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-sm font-black uppercase tracking-wide text-white shadow-sm transition active:scale-[0.99]"
-                    >
-                      <Save className="h-4 w-4" />
-                      <span>{text('Save Husk Lot', 'ලෙලි සුරකින්න')}</span>
-                    </button>
-                  </form>
-                </section>
-
-                <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
-                    <div>
-                      <h2 className="text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                        {text('Husk Lot', 'ලෙලි පිටුව')}
-                      </h2>
-                      <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
-                        {activeHuskFinancials.totalHusks.toLocaleString()} {text('husks', 'ලෙලි')}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleArchiveHuskLedger}
-                      className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-500"
-                    >
-                      {text('Close', 'වසන්න')}
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 p-4 text-xs font-bold">
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
-                      <span className="block text-[10px] uppercase text-slate-400">{text('Total Expense', 'මුළු වියදම')}</span>
-                      <span className="mt-1 block text-lg font-black text-rose-500">{formatCurrency(activeHuskFinancials.totalExpense)}</span>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
-                      <span className="block text-[10px] uppercase text-slate-400">{text('1,000 Avg', '1000 ඇවරේජ්')}</span>
-                      <span className="mt-1 block text-lg font-black text-emerald-500">{activeHuskFinancials.averageWeight1000.toFixed(2)} kg</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 p-4 pt-0">
-                    {(activeHuskLedger.records || []).length === 0 ? (
-                      <div className="rounded-lg border border-dashed border-slate-300 p-5 text-center text-xs font-semibold text-slate-400 dark:border-slate-700">
-                        {text('No husk records', 'ලෙලි සටහන් නැත')}
-                      </div>
-                    ) : (
-                      activeHuskLedger.records.map(record => (
-                        <div key={record.id} className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-800">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <span className="block font-black text-slate-800 dark:text-slate-100">{record.qty.toLocaleString()} {text('husks', 'ලෙලි')}</span>
-                              <span className="mt-0.5 block text-[10px] font-semibold text-slate-400">{record.date} {record.time}</span>
-                            </div>
-                            <span className="font-black text-rose-500">{formatCurrency(record.totalExpense)}</span>
+                    {editingTxId && editTxForm && (
+                      <div className="border-b border-amber-500/20 bg-amber-500/10 p-4">
+                        <form onSubmit={handleSaveEditedTransaction} className="space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                              {text('Edit Bill', 'බිල එඩිට්')}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingTxId(null);
+                                setEditTxForm(null);
+                              }}
+                              className="rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-500 dark:border-slate-700"
+                            >
+                              {t('cancel')}
+                            </button>
                           </div>
-                          <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] font-bold text-slate-500 dark:text-slate-350">
-                            <span>{text('Haul', 'අදින')}: {formatCurrency(record.transportSubtotal)}</span>
-                            <span>{text('Cut', 'කපන')}: {formatCurrency(record.cuttingWages)}</span>
-                            <span>{text('Dry', 'වේලන')}: {formatCurrency(record.dryingWages)}</span>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <select
+                              value={editTxForm.type}
+                              onChange={(e) => setEditTxForm(prev => ({ ...prev, type: e.target.value }))}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                            >
+                              <option value="purchase">{t('purchase')}</option>
+                              <option value="sale">{t('sale')}</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={editTxForm.name}
+                              onChange={(e) => setEditTxForm(prev => ({ ...prev, name: e.target.value }))}
+                              placeholder={text('Name', 'නම')}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                            />
+                            <input
+                              type="number"
+                              value={editTxForm.qty}
+                              onChange={(e) => setEditTxForm(prev => ({ ...prev, qty: e.target.value }))}
+                              placeholder={t('qty')}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                            />
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={editTxForm.price}
+                              onChange={(e) => setEditTxForm(prev => ({ ...prev, price: e.target.value }))}
+                              placeholder={t('unitPrice')}
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                            />
+                            {featureSettings.adjustments && (
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={editTxForm.adjustment}
+                                onChange={(e) => setEditTxForm(prev => ({ ...prev, adjustment: e.target.value }))}
+                                placeholder={t('adjustment')}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            )}
+                            {featureSettings.settlement && (
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={editTxForm.settlementAmount}
+                                onChange={(e) => setEditTxForm(prev => ({ ...prev, settlementAmount: e.target.value }))}
+                                placeholder={text('Settle', 'ණය අඩු')}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            )}
+                            {featureSettings.phone && (
+                              <input
+                                type="text"
+                                value={editTxForm.phone}
+                                onChange={(e) => setEditTxForm(prev => ({ ...prev, phone: e.target.value }))}
+                                placeholder={t('phone')}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            )}
+                            {featureSettings.billNumber && (
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={editTxForm.billNumber}
+                                onChange={(e) => setEditTxForm(prev => ({ ...prev, billNumber: e.target.value }))}
+                                onBlur={(e) => setEditTxForm(prev => ({ ...prev, billNumber: formatBillNumber(e.target.value) }))}
+                                placeholder={t('billNumber')}
+                                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                              />
+                            )}
+                          </div>
+
+                          <input
+                            type="text"
+                            value={editTxForm.description}
+                            onChange={(e) => setEditTxForm(prev => ({ ...prev, description: e.target.value }))}
+                            placeholder={t('description')}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-900 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                          />
+
+                          <button
+                            type="submit"
+                            className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-black uppercase tracking-wide text-white"
+                          >
+                            <Save className="h-4 w-4" />
+                            <span>{text('Save Changes', 'සුරකින්න')}</span>
+                          </button>
+                        </form>
+                      </div>
+                    )}
+
+                    {/* Manual Entry Form Grid */}
+                    {featureSettings.manualEntries && (
+                      <div className="px-4 py-3 bg-slate-50 dark:bg-slate-850/10 border-b border-slate-200 dark:border-slate-800">
+                        <form onSubmit={handleAddManualEntry} className="flex flex-col gap-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                              {t('manualEntry')}:
+                            </span>
+
+                            {/* Select Type Buttons */}
+                            <div className="grid grid-cols-3 bg-slate-200 dark:bg-slate-900 p-0.5 rounded-md text-[10px] font-bold gap-0.5 w-full sm:w-auto">
+                              <button
+                                type="button"
+                                onClick={() => setManualType('stock')}
+                                className={`px-2.5 py-1 rounded transition cursor-pointer ${manualType === 'stock' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                                  }`}
+                              >
+                                {t('huskedStock')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setManualType('expense')}
+                                className={`px-2.5 py-1 rounded transition cursor-pointer ${manualType === 'expense' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                                  }`}
+                              >
+                                {t('dailyCost')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setManualType('income')}
+                                className={`px-2.5 py-1 rounded transition cursor-pointer ${manualType === 'income' ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                                  }`}
+                              >
+                                {t('manualIncome')}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Form fields based on selected type */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-4 gap-3 items-end">
+
+                            {manualType === 'stock' && (
+                              <>
+                                <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('huskedQty')}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={manualStockQty}
+                                    onChange={(e) => setManualStockQty(e.target.value)}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="e.g. 500"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('laborPrice')}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={manualStockLabor}
+                                    onChange={(e) => setManualStockLabor(e.target.value)}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="e.g. 4.00"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {manualType === 'expense' && (
+                              <>
+                                <div className="sm:col-span-2">
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('expenseDesc')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={manualDesc}
+                                    onChange={(e) => setManualDesc(e.target.value)}
+                                    placeholder="e.g. Loading / Transport"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('amount')}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={manualAmount}
+                                    onChange={(e) => setManualAmount(e.target.value)}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="0.00"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {manualType === 'income' && (
+                              <>
+                                <div className="sm:col-span-2">
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('incomeDesc')}
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={manualDesc}
+                                    onChange={(e) => setManualDesc(e.target.value)}
+                                    placeholder="e.g. Shell sales / Bag sales"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('amount')}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={manualAmount}
+                                    onChange={(e) => setManualAmount(e.target.value)}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="0.00"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            <div>
+                              <button
+                                type="submit"
+                                className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 bg-slate-850 hover:bg-slate-850 active:scale-[0.99] dark:bg-slate-700 dark:hover:bg-slate-650 text-white font-bold text-sm rounded transition cursor-pointer"
+                              >
+                                <Plus className="w-4 h-4" />
+                                <span>{t('addEntry')}</span>
+                              </button>
+                            </div>
+
+                          </div>
+                        </form>
+                      </div>
+                    )}
+
+                    {/* Physical CR Book Ledger Page */}
+                    <div className="bg-[#fbf8ef] p-3 dark:bg-slate-950 sm:p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                          <span className="block text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                            {text('Current Page', 'වත්මන් පිටුව')}
+                          </span>
+                          <span className="text-sm font-black text-slate-900 dark:text-slate-100">
+                            {activeLedger.startDate}
+                          </span>
+                        </div>
+                        <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-black text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                          {(activeLedger.transactions || []).length} {text('rows', 'පේළි')}
+                        </span>
+                      </div>
+
+                      <div className="overflow-x-auto rounded-lg border border-slate-300 bg-white shadow-inner dark:border-slate-700 dark:bg-slate-900">
+                        <table className="w-full min-w-[780px] border-collapse text-left text-[11px]">
+                          <thead>
+                            <tr className="border-b-2 border-slate-400 bg-slate-100 text-[10px] font-black uppercase tracking-wide text-slate-600 dark:border-slate-650 dark:bg-slate-850 dark:text-slate-300">
+                              <th className="w-12 border-r border-slate-300 px-2 py-2 text-center dark:border-slate-700">#</th>
+                              <th className="w-24 border-r border-slate-300 px-2 py-2 dark:border-slate-700">{text('Date', 'දිනය')}</th>
+                              <th className="border-r border-slate-300 px-2 py-2 dark:border-slate-700">{text('Name / Details', 'නම / විස්තර')}</th>
+                              <th className="w-20 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('qty')}</th>
+                              <th className="w-24 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('unitPrice')}</th>
+                              <th className="w-28 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('adjustment')}</th>
+                              <th className="w-28 border-r border-slate-300 px-2 py-2 text-right dark:border-slate-700">{t('netAmount')}</th>
+                              <th className="w-24 px-2 py-2 text-center">{t('actions')}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {activeLedger.transactions.length === 0 ? (
+                              <tr>
+                                <td colSpan="8" className="px-4 py-10 text-center text-xs font-semibold text-slate-400">
+                                  {text('Print a bill to write the first row', 'පළමු පේළියට බිලක් ප්‍රින්ට් කරන්න')}
+                                </td>
+                              </tr>
+                            ) : (
+                              activeLedger.transactions.map((tx, index) => {
+                                const adjustmentText = tx.type === 'credit_settlement'
+                                  ? `- ${formatCurrency(getSettlement(tx))}`
+                                  : tx.adjustment > 0
+                                    ? `${tx.adjustmentType === 'add' ? '+' : '-'} ${formatCurrency(tx.adjustment)}`
+                                    : '-';
+                                const netDisplay = tx.type === 'credit_settlement'
+                                  ? formatCurrency(getSettlement(tx))
+                                  : tx.type === 'stock_log'
+                                    ? '-'
+                                    : formatCurrency(tx.netAmount);
+                                const netClass = tx.type === 'sale' || tx.type === 'manual_income'
+                                  ? 'text-emerald-600 dark:text-emerald-300'
+                                  : tx.type === 'credit_settlement'
+                                    ? 'text-amber-600 dark:text-amber-300'
+                                    : tx.type === 'stock_log'
+                                      ? 'text-slate-400'
+                                      : 'text-rose-600 dark:text-rose-300';
+
+                                return (
+                                  <tr
+                                    key={`book-${tx.id}`}
+                                    className="border-b border-slate-300 bg-white align-top font-semibold text-slate-800 last:border-b-0 dark:border-slate-750 dark:bg-slate-900 dark:text-slate-100"
+                                  >
+                                    <td className="border-r border-slate-200 px-2 py-2 text-center font-black text-slate-400 dark:border-slate-800">
+                                      {index + 1}
+                                    </td>
+                                    <td className="border-r border-slate-200 px-2 py-2 font-bold text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                                      <span className="block">{tx.date}</span>
+                                      <span className="block text-[10px] font-semibold">{tx.time}</span>
+                                    </td>
+                                    <td className="border-r border-slate-200 px-2 py-2 dark:border-slate-800">
+                                      <div className="font-black leading-snug">
+                                        {tx.name || tx.description}
+                                      </div>
+                                      <div className="mt-0.5 text-[10px] font-semibold leading-snug text-slate-500 dark:text-slate-400">
+                                        {tx.name ? tx.description : tx.type === 'stock_log' ? t('huskedStock') : tx.type === 'credit_settlement' ? text('Debt settlement', 'ණය අඩු කිරීම') : tx.billNumber || '-'}
+                                        {tx.billNumber && tx.name ? ` / ${tx.billNumber}` : ''}
+                                      </div>
+                                    </td>
+                                    <td className="border-r border-slate-200 px-2 py-2 text-right font-black dark:border-slate-800">
+                                      {tx.qty > 0 ? tx.qty.toLocaleString() : '-'}
+                                    </td>
+                                    <td className="border-r border-slate-200 px-2 py-2 text-right dark:border-slate-800">
+                                      {tx.price > 0 ? formatCurrency(tx.price) : '-'}
+                                    </td>
+                                    <td className="border-r border-slate-200 px-2 py-2 text-right dark:border-slate-800">
+                                      {adjustmentText}
+                                    </td>
+                                    <td className={`border-r border-slate-200 px-2 py-2 text-right font-black dark:border-slate-800 ${netClass}`}>
+                                      {netDisplay}
+                                    </td>
+                                    <td className="px-2 py-2">
+                                      <div className="flex items-center justify-center gap-1">
+                                        {isBillLike(tx) && (
+                                          <button
+                                            onClick={() => printReceipt(tx)}
+                                            className="rounded border border-slate-200 p-1 text-slate-500 hover:text-emerald-600 dark:border-slate-700"
+                                            title="Print Receipt"
+                                            aria-label="Print receipt"
+                                          >
+                                            <Printer className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                        {isBillLike(tx) && (
+                                          <button
+                                            onClick={() => startEditTransaction(tx)}
+                                            className="rounded border border-slate-200 p-1 text-slate-500 hover:text-amber-600 dark:border-slate-700"
+                                            title="Edit Bill"
+                                            aria-label="Edit bill"
+                                          >
+                                            <Pencil className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                        <button
+                                          onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
+                                          className="rounded border border-slate-200 p-1 text-slate-500 hover:text-rose-600 dark:border-slate-700"
+                                          title="Delete Entry"
+                                          aria-label="Delete entry"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Mobile Transaction Cards */}
+                    <div className="hidden">
+                      {activeLedger.transactions.length === 0 ? (
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 text-center text-sm text-slate-400">
+                          {t('historyEmpty')}
+                        </div>
+                      ) : (
+                        activeLedger.transactions.map((tx) => (
+                          <div
+                            key={`mobile-${tx.id}`}
+                            className={`rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm ${tx.type === 'stock_log'
+                                ? 'bg-emerald-500/5 dark:bg-emerald-950/20'
+                                : 'bg-white dark:bg-slate-900'
+                              }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-semibold text-slate-400">
+                                  {tx.date} {tx.time}
+                                </p>
+                                <p className="mt-1 text-sm font-bold leading-snug break-words">
+                                  {tx.description}
+                                </p>
+                                {(tx.name || tx.phone || tx.billNumber) && (
+                                  <div className="text-[11px] text-slate-400 mt-1 space-y-0.5">
+                                    {tx.name && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span> {tx.name}</div>}
+                                    {tx.phone && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{t('phone')}:</span> {tx.phone}</div>}
+                                    {tx.billNumber && <div><span className="font-semibold text-slate-500 dark:text-slate-350">{t('billNumber')}:</span> {tx.billNumber}</div>}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1">
+                                {isBillLike(tx) && (
+                                  <button
+                                    onClick={() => printReceipt(tx)}
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-emerald-500 transition cursor-pointer text-slate-550"
+                                    title="Print Receipt"
+                                    aria-label="Print receipt"
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                  </button>
+                                )}
+                                {isBillLike(tx) && (
+                                  <button
+                                    onClick={() => startEditTransaction(tx)}
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-amber-500 transition cursor-pointer text-slate-550"
+                                    title="Edit bill"
+                                    aria-label="Edit bill"
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
+                                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:text-rose-500 transition cursor-pointer text-slate-555"
+                                  title="Delete Entry"
+                                  aria-label="Delete entry"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {tx.type === 'purchase' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-rose-500/10 text-rose-500 uppercase border border-rose-500/20">
+                                  {t('purchase')}
+                                </span>
+                              )}
+                              {tx.type === 'sale' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-emerald-500/10 text-emerald-500 uppercase border border-emerald-500/20">
+                                  {t('sale')}
+                                </span>
+                              )}
+                              {tx.type === 'credit_settlement' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-300 uppercase border border-amber-500/20">
+                                  {text('Settlement', 'ණය අඩු')}
+                                </span>
+                              )}
+                              {tx.type === 'stock_log' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-emerald-500/10 text-teal-600 dark:text-emerald-400 uppercase border border-emerald-500/25">
+                                  {t('huskedStock')}
+                                </span>
+                              )}
+                              {tx.type === 'daily_cost' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 uppercase border border-rose-500/20">
+                                  {t('dailyCost')}
+                                </span>
+                              )}
+                              {tx.type === 'manual_income' && (
+                                <span className="px-2 py-1 text-[10px] font-bold rounded-md bg-sky-500/10 text-sky-500 uppercase border border-sky-500/20">
+                                  {t('manualIncome')}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                              <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
+                                <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('qty')}</span>
+                                <span className="font-bold text-slate-700 dark:text-slate-200">{tx.qty > 0 ? tx.qty.toLocaleString() : '-'}</span>
+                              </div>
+                              <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
+                                <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('unitPrice')}</span>
+                                <span className="font-bold text-slate-700 dark:text-slate-200">{tx.price > 0 ? formatCurrency(tx.price) : '-'}</span>
+                              </div>
+                              <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
+                                <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('adjustment')}</span>
+                                <span className={tx.adjustmentType === 'add' ? 'font-bold text-emerald-500' : 'font-bold text-rose-500'}>
+                                  {tx.adjustment > 0 ? `${tx.adjustmentType === 'add' ? '+' : '-'} ${formatCurrency(tx.adjustment)}` : '-'}
+                                </span>
+                              </div>
+                              <div className="rounded-lg bg-slate-50 dark:bg-slate-850 p-2">
+                                <span className="block text-[10px] font-bold uppercase text-slate-450 dark:text-slate-400">{t('amount')}</span>
+                                {tx.type === 'credit_settlement' ? (
+                                  <span className="font-bold text-amber-600 dark:text-amber-300">- {formatCurrency(getSettlement(tx))}</span>
+                                ) : tx.type === 'sale' || tx.type === 'manual_income' ? (
+                                  <span className="font-bold text-emerald-500">+ {formatCurrency(tx.netAmount)}</span>
+                                ) : tx.type === 'purchase' || tx.type === 'daily_cost' ? (
+                                  <span className="font-bold text-rose-500">- {formatCurrency(tx.netAmount)}</span>
+                                ) : (
+                                  <span className="font-bold">-</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Table Area */}
+                    <div className="hidden">
+                      <table className="w-full border-collapse text-left">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-850/50 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                            <th className="px-6 py-3">{t('time')}</th>
+                            <th className="px-6 py-3">{t('description')}</th>
+                            <th className="px-6 py-3">{t('type')}</th>
+                            <th className="px-6 py-3 text-right">{t('qty')}</th>
+                            <th className="px-6 py-3 text-right">{t('unitPrice')}</th>
+                            <th className="px-6 py-3 text-right">{t('adjustment')}</th>
+                            <th className="px-6 py-3 text-right text-emerald-500">{t('income')}</th>
+                            <th className="px-6 py-3 text-right text-rose-500">{t('expense')}</th>
+                            <th className="px-6 py-3 text-center">{t('actions')}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-150 dark:divide-slate-800/80">
+                          {activeLedger.transactions.length === 0 ? (
+                            <tr>
+                              <td colSpan="9" className="text-center py-10 text-xs text-slate-400">
+                                {t('historyEmpty')}
+                              </td>
+                            </tr>
+                          ) : (
+                            activeLedger.transactions.map((tx) => (
+                              <tr
+                                key={tx.id}
+                                className={`hover:bg-slate-50 dark:hover:bg-slate-850/40 transition-colors text-xs ${tx.type === 'stock_log' ? 'opacity-85 bg-emerald-500/5' : ''
+                                  }`}
+                              >
+                                <td className="px-6 py-3 whitespace-nowrap text-slate-400 font-medium">
+                                  {tx.date} {tx.time}
+                                </td>
+                                <td className="px-6 py-3">
+                                  <div className="font-semibold capitalize max-w-xs truncate text-slate-800 dark:text-slate-200" title={tx.description}>
+                                    {tx.description}
+                                  </div>
+                                  {(tx.name || tx.phone || tx.billNumber) && (
+                                    <div className="text-[10px] text-slate-400 mt-0.5 space-y-0.5 font-normal">
+                                      {tx.name && <div><span className="font-medium text-slate-500 dark:text-slate-450">{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span> {tx.name}</div>}
+                                      {tx.phone && <div><span className="font-medium text-slate-500 dark:text-slate-450">{t('phone')}:</span> {tx.phone}</div>}
+                                      {tx.billNumber && <div><span className="font-medium text-slate-500 dark:text-slate-450">{t('billNumber')}:</span> {tx.billNumber}</div>}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-6 py-3 whitespace-nowrap">
+                                  {tx.type === 'purchase' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-rose-500/10 text-rose-500 uppercase border border-rose-500/20">
+                                      {t('purchase')}
+                                    </span>
+                                  )}
+                                  {tx.type === 'sale' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-500 uppercase border border-emerald-500/20">
+                                      {t('sale')}
+                                    </span>
+                                  )}
+                                  {tx.type === 'credit_settlement' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-amber-500/10 text-amber-600 dark:text-amber-300 uppercase border border-amber-500/20">
+                                      {text('Settlement', 'ණය අඩු')}
+                                    </span>
+                                  )}
+                                  {tx.type === 'stock_log' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-emerald-500/10 text-teal-600 dark:text-emerald-400 uppercase border border-emerald-500/25">
+                                      {t('huskedStock')}
+                                    </span>
+                                  )}
+                                  {tx.type === 'daily_cost' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 uppercase border border-rose-500/20">
+                                      {t('dailyCost')}
+                                    </span>
+                                  )}
+                                  {tx.type === 'manual_income' && (
+                                    <span className="px-2 py-0.5 text-[9px] font-bold rounded bg-sky-500/10 text-sky-500 uppercase border border-sky-500/20">
+                                      {t('manualIncome')}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-6 py-3 text-right font-medium text-slate-700 dark:text-slate-200">
+                                  {tx.qty > 0 ? tx.qty.toLocaleString() : '-'}
+                                </td>
+                                <td className="px-6 py-3 text-right font-medium text-slate-405">
+                                  {tx.price > 0 ? formatCurrency(tx.price) : '-'}
+                                </td>
+                                <td className="px-6 py-3 text-right font-medium text-slate-405">
+                                  {tx.adjustment > 0 ? (
+                                    <span className={tx.adjustmentType === 'add' ? 'text-emerald-500' : 'text-rose-500'}>
+                                      {tx.adjustmentType === 'add' ? '+' : '-'} {formatCurrency(tx.adjustment)}
+                                    </span>
+                                  ) : '-'}
+                                </td>
+                                <td className="px-6 py-3 text-right font-bold text-emerald-500">
+                                  {tx.type === 'sale' || tx.type === 'manual_income' ? formatCurrency(tx.netAmount) : '-'}
+                                </td>
+                                <td className="px-6 py-3 text-right font-bold text-rose-500">
+                                  {tx.type === 'purchase' || tx.type === 'daily_cost' ? formatCurrency(tx.netAmount) : tx.type === 'credit_settlement' ? formatCurrency(getSettlement(tx)) : '-'}
+                                </td>
+                                <td className="px-6 py-3 text-center">
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    {isBillLike(tx) && (
+                                      <button
+                                        onClick={() => printReceipt(tx)}
+                                        className="p-1 hover:text-emerald-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
+                                        title="Print Receipt"
+                                      >
+                                        <Printer className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                    {isBillLike(tx) && (
+                                      <button
+                                        onClick={() => startEditTransaction(tx)}
+                                        className="p-1 hover:text-amber-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
+                                        title="Edit Bill"
+                                      >
+                                        <Pencil className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => handleDeleteTransaction(tx.id, tx.type, tx.qty)}
+                                      className="p-1 hover:text-rose-500 text-slate-400 dark:text-slate-500 transition cursor-pointer"
+                                      title="Delete Entry"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Structured Table Running Footer */}
+                    <div className="bg-slate-50 dark:bg-slate-850/10 p-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-bold">
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('coconutsCollected')}</span>
+                        <span className="text-lg font-extrabold text-rose-500">{totalPurchasedCoconuts.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
+                        <span className="text-[10px] font-semibold text-slate-400">{formatCurrency(totalPurchaseAmount)}</span>
+                      </div>
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('coconutsSold')}</span>
+                        <span className="text-lg font-extrabold text-emerald-500">{totalSoldCoconuts.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
+                        <span className="text-[10px] font-semibold text-slate-400">{formatCurrency(totalSaleAmount)}</span>
+                      </div>
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('huskedStocks')}</span>
+                        <span className="text-lg font-extrabold text-teal-600 dark:text-emerald-400">{activeLedger.huskedCoconutsCount.toLocaleString()} <span className="text-[10px] font-normal">pcs</span></span>
+                        <span className="text-[10px] font-semibold text-slate-400">Labor: {formatCurrency(totalHuskingLabor)}</span>
+                      </div>
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800/80 flex flex-col gap-0.5">
+                        <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold uppercase tracking-wider">{t('ledgerBalance')}</span>
+                        <span className="text-lg font-extrabold text-slate-850 dark:text-slate-100">
+                          {formatCurrency(manualAndSalesIncome - totalExpenses)}
+                        </span>
+                        <span className="text-[9px] font-normal text-slate-400">Pre husk sales</span>
+                      </div>
+                    </div>
+
+                    {featureSettings.creditLedger && (
+                      <div className="border-t border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Wallet className="h-4 w-4 text-amber-500" />
+                            <h3 className="text-xs font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                              {text('Customer / Supplier Ledger', 'ණය ලෙජරය')}
+                            </h3>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-400">
+                            {partyBalances.length}
+                          </span>
+                        </div>
+
+                        {partyBalances.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-xs font-semibold text-slate-400 dark:border-slate-700">
+                            {text('No open debt', 'විවෘත ණය නැත')}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                            {partyBalances.slice(0, 9).map(item => (
+                              <div key={`${item.type}-${item.name}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-850/20">
+                                <div className="min-w-0">
+                                  <span className="block truncate font-black text-slate-800 dark:text-slate-100">{item.name}</span>
+                                  <span className="text-[10px] font-semibold text-slate-400">
+                                    {item.type === 'purchase' ? text('We owe', 'අපි ගෙවිය යුතු') : text('Owes us', 'අපට ලැබිය යුතු')}
+                                  </span>
+                                </div>
+                                <span className="shrink-0 font-black text-amber-600 dark:text-amber-300">{formatCurrency(item.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SECTION 3: PROFIT & LOSS SUMMARY */}
+                    <div className="p-4 bg-slate-100 dark:bg-slate-850/10 border-t border-slate-200 dark:border-slate-800">
+
+                      <div className="flex items-center gap-2 mb-4">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                        <h2 className="text-sm font-bold tracking-wide uppercase text-slate-700 dark:text-slate-200">
+                          {t('profitLossTitle')}
+                        </h2>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+                        {/* Calculations Columns */}
+                        <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Expense Box */}
+                          <div className="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between">
+                            <div>
+                              <span className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">{t('expenseSide')}</span>
+                            </div>
+                            <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
+                              <span className="text-xl font-black text-rose-500">
+                                {formatCurrency(totalExpenses)}
+                              </span>
+                              <div className="mt-2 space-y-1 text-[11px] font-semibold text-slate-450 dark:text-slate-400">
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('qty')}</span>
+                                  <span>{totalPurchasedCoconuts.toLocaleString()} pcs / {formatCurrency(totalPurchaseAmount)}</span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('laborPrice')}</span>
+                                  <span>{formatCurrency(totalHuskingLabor)}</span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('dailyCost')}</span>
+                                  <span>{formatCurrency(totalOtherCosts)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Income Box */}
+                          <div className="p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col justify-between">
+                            <div>
+                              <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">{t('incomeSide')}</span>
+                            </div>
+                            <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
+                              <span className="text-xl font-black text-emerald-500">
+                                {formatCurrency(finalTotalIncome)}
+                              </span>
+                              <div className="mt-2 space-y-1 text-[11px] font-semibold text-slate-450 dark:text-slate-400">
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('coconutsSold')}</span>
+                                  <span>{totalSoldCoconuts.toLocaleString()} pcs / {formatCurrency(totalSaleAmount)}</span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('coProductIncome')}</span>
+                                  <span>{formatCurrency(totalCoProductIncome)}</span>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <span>{t('manualIncome')}</span>
+                                  <span>{formatCurrency(totalManualIncome)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Co-Product Inputs */}
+                          {featureSettings.coProducts && (
+                            <div className="sm:col-span-2 p-4 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 space-y-3">
+                              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+                                <span className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase tracking-wider">
+                                  {t('coProductIncome')}
+                                </span>
+                                <span className="text-xs font-bold text-emerald-500">
+                                  + {formatCurrency(totalCoProductIncome)}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label htmlFor="husk-type-1" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('huskType1')}
+                                  </label>
+                                  <input
+                                    id="husk-type-1"
+                                    type="number"
+                                    step="0.01"
+                                    value={coProducts.huskType1}
+                                    onChange={(e) => setCoProducts(prev => ({ ...prev, huskType1: e.target.value }))}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="0.00"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-transparent text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label htmlFor="husk-type-2" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                                    {t('huskType2')}
+                                  </label>
+                                  <input
+                                    id="husk-type-2"
+                                    type="number"
+                                    step="0.01"
+                                    value={coProducts.huskType2}
+                                    onChange={(e) => setCoProducts(prev => ({ ...prev, huskType2: e.target.value }))}
+                                    onFocus={(e) => e.target.select()}
+                                    placeholder="0.00"
+                                    className="w-full px-4 py-2.5 text-sm rounded border border-slate-300 dark:border-slate-750 bg-transparent text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                        </div>
+
+                        {/* Prominent Profit Card */}
+                        <div className="p-5 bg-gradient-to-br from-emerald-800 via-teal-800 to-slate-900 text-white rounded-lg flex flex-col justify-between shadow-lg shadow-emerald-500/10">
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-100">
+                              {t('netProfitLoss')}
+                            </span>
+                          </div>
+
+                          <div className="my-4">
+                            <span className="text-3xl font-extrabold tracking-tight">
+                              {formatCurrency(netProfit)}
+                            </span>
+                          </div>
+
+                          <div>
+                            <button
+                              onClick={() => setShowResetConfirm(true)}
+                              className="w-full py-2 bg-slate-900 hover:bg-slate-950 active:scale-[0.99] text-white font-bold text-xs uppercase tracking-wider rounded transition shadow cursor-pointer"
+                            >
+                              {t('closePage')}
+                            </button>
                           </div>
                         </div>
-                      ))
-                    )}
-                  </div>
 
-                  {archivedHuskLedgers.length > 0 && (
-                    <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-                      <h3 className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-400">
-                        {text('Closed Husk Lots', 'වසා දැමූ ලෙලි')}
-                      </h3>
-                      <div className="space-y-2">
-                        {archivedHuskLedgers.slice(0, 4).map(ledger => (
-                          <div key={ledger.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs font-bold dark:bg-slate-850/20">
-                            <span>{ledger.startDate} - {ledger.endDate}</span>
-                            <span className="text-rose-500">{formatCurrency((ledger.financials || calculateHuskFinancials(ledger)).totalExpense)}</span>
-                          </div>
-                        ))}
+                      </div>
+
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <>
+                  <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3 dark:border-slate-800">
+                      <div className="flex items-center gap-2">
+                        <Calculator className="h-4 w-4 text-emerald-500" />
+                        <h2 className="text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                          {text('Husk Calculator', 'ලෙලි ගණනය')}
+                        </h2>
+                      </div>
+                      <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-300">
+                        {activeHuskLedger.startDate}
+                      </span>
+                    </div>
+
+                    <form onSubmit={handleSaveHuskRecord} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {text('Husk Qty', 'ලෙලි ගණන')}
+                          </label>
+                          <input
+                            type="number"
+                            value={huskForm.qty}
+                            onChange={(e) => setHuskForm(prev => ({ ...prev, qty: e.target.value }))}
+                            onFocus={(e) => e.target.select()}
+                            placeholder="0"
+                            className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {text('Hauling Rate', 'අදින මිල')}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={huskForm.haulingRate}
+                            onChange={(e) => setHuskForm(prev => ({ ...prev, haulingRate: e.target.value }))}
+                            onFocus={(e) => e.target.select()}
+                            placeholder="0.00"
+                            className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-lg font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span className="uppercase text-slate-400">{text('Subtotal', 'උප එකතුව')}</span>
+                          <span className="text-base text-slate-900 dark:text-slate-100">{formatCurrency(huskSubtotal)}</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {text('Cutting', 'කපන්න')}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={huskForm.cuttingWages}
+                            onChange={(e) => setHuskForm(prev => ({ ...prev, cuttingWages: e.target.value }))}
+                            onFocus={(e) => e.target.select()}
+                            placeholder="0.00"
+                            className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {text('Drying', 'වේලන')}
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={huskForm.dryingWages}
+                            onChange={(e) => setHuskForm(prev => ({ ...prev, dryingWages: e.target.value }))}
+                            onFocus={(e) => e.target.select()}
+                            placeholder="0.00"
+                            className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                          {text('Weight of 1,000 Husks', 'ලෙලි 1000ක කිලෝ')}
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={huskForm.weight1000}
+                          onChange={(e) => setHuskForm(prev => ({ ...prev, weight1000: e.target.value }))}
+                          onFocus={(e) => e.target.select()}
+                          placeholder="0.00"
+                          className="w-full rounded-lg border border-slate-300 bg-transparent px-4 py-3 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:border-slate-750 dark:text-slate-100"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-3">
+                          <span className="block text-[10px] font-bold uppercase text-rose-500">{text('Expense', 'ගිය වියදම')}</span>
+                          <span className="mt-1 block text-xl font-black text-rose-600 dark:text-rose-300">{formatCurrency(huskTotalExpense)}</span>
+                        </div>
+                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+                          <span className="block text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-300">{text('Avg Weight', 'ඇවරේජ් බර')}</span>
+                          <span className="mt-1 block text-xl font-black text-emerald-700 dark:text-emerald-200">{huskAverageWeight.toFixed(3)} kg</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-sm font-black uppercase tracking-wide text-white shadow-sm transition active:scale-[0.99]"
+                      >
+                        <Save className="h-4 w-4" />
+                        <span>{text('Save Husk Lot', 'ලෙලි සුරකින්න')}</span>
+                      </button>
+                    </form>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
+                      <div>
+                        <h2 className="text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                          {text('Husk Lot', 'ලෙලි පිටුව')}
+                        </h2>
+                        <p className="mt-0.5 text-[10px] font-semibold text-slate-400">
+                          {activeHuskFinancials.totalHusks.toLocaleString()} {text('husks', 'ලෙලි')}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleArchiveHuskLedger}
+                        className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-500"
+                      >
+                        {text('Close', 'වසන්න')}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 p-4 text-xs font-bold">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
+                        <span className="block text-[10px] uppercase text-slate-400">{text('Total Expense', 'මුළු වියදම')}</span>
+                        <span className="mt-1 block text-lg font-black text-rose-500">{formatCurrency(activeHuskFinancials.totalExpense)}</span>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850/20">
+                        <span className="block text-[10px] uppercase text-slate-400">{text('1,000 Avg', '1000 ඇවරේජ්')}</span>
+                        <span className="mt-1 block text-lg font-black text-emerald-500">{activeHuskFinancials.averageWeight1000.toFixed(2)} kg</span>
                       </div>
                     </div>
-                  )}
-                </section>
-              </>
-            )}
 
-          </main>
+                    <div className="space-y-2 p-4 pt-0">
+                      {(activeHuskLedger.records || []).length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-slate-300 p-5 text-center text-xs font-semibold text-slate-400 dark:border-slate-700">
+                          {text('No husk records', 'ලෙලි සටහන් නැත')}
+                        </div>
+                      ) : (
+                        activeHuskLedger.records.map(record => (
+                          <div key={record.id} className="rounded-lg border border-slate-200 p-3 text-xs dark:border-slate-800">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <span className="block font-black text-slate-800 dark:text-slate-100">{record.qty.toLocaleString()} {text('husks', 'ලෙලි')}</span>
+                                <span className="mt-0.5 block text-[10px] font-semibold text-slate-400">{record.date} {record.time}</span>
+                              </div>
+                              <span className="font-black text-rose-500">{formatCurrency(record.totalExpense)}</span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-3 gap-2 text-[10px] font-bold text-slate-500 dark:text-slate-350">
+                              <span>{text('Haul', 'අදින')}: {formatCurrency(record.transportSubtotal)}</span>
+                              <span>{text('Cut', 'කපන')}: {formatCurrency(record.cuttingWages)}</span>
+                              <span>{text('Dry', 'වේලන')}: {formatCurrency(record.dryingWages)}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {archivedHuskLedgers.length > 0 && (
+                      <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+                        <h3 className="mb-2 text-[10px] font-black uppercase tracking-wide text-slate-400">
+                          {text('Closed Husk Lots', 'වසා දැමූ ලෙලි')}
+                        </h3>
+                        <div className="space-y-2">
+                          {archivedHuskLedgers.slice(0, 4).map(ledger => (
+                            <div key={ledger.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs font-bold dark:bg-slate-850/20">
+                              <span>{ledger.startDate} - {ledger.endDate}</span>
+                              <span className="text-rose-500">{formatCurrency((ledger.financials || calculateHuskFinancials(ledger)).totalExpense)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                </>
+              )}
+
+            </main>
           )}
         </div>
 
         {/* RESET / CLOSE PAGE CONFIRMATION MODAL */}
         {showResetConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm print:hidden">
+          <div className="safe-modal-overlay fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm print:hidden">
             <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 shadow-2xl">
               <div className="flex items-center gap-2 text-amber-500 mb-3">
                 <AlertTriangle className="w-5 h-5" />
@@ -3854,7 +4888,7 @@ export default function App() {
                   {t('archiveConfirmTitle')}
                 </h3>
               </div>
-              
+
               <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 leading-relaxed font-semibold">
                 {t('archiveConfirmDesc')}
               </p>
@@ -3879,16 +4913,16 @@ export default function App() {
 
         {/* ARCHIVED HISTORY DRAWER / MODAL */}
         {showHistory && (
-          <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/70 backdrop-blur-sm print:hidden">
+          <div className="safe-modal-overlay fixed inset-0 z-50 flex justify-end bg-slate-950/70 backdrop-blur-sm print:hidden">
             <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 h-full flex flex-col shadow-2xl">
-              
+
               {/* Drawer Header */}
               <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <Archive className="w-4 h-4 text-emerald-500" />
                   <h3 className="text-sm font-bold uppercase text-slate-700 dark:text-slate-200">{t('historyTitle')}</h3>
                 </div>
-                
+
                 <div className="flex items-center gap-2">
                   {archivedLedgers.length > 0 && (
                     <button
@@ -3918,119 +4952,119 @@ export default function App() {
                     const financials = calculateLedgerFinancials(ledger, ledger.coProducts || {});
                     const draft = archiveAdjustmentDrafts[ledger.id] || { type: 'income', description: '', amount: '' };
                     return (
-                    <div 
-                      key={ledger.id} 
-                      className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-slate-50 dark:bg-slate-850/10"
-                    >
-                      {/* Header bar */}
-                      <div className="bg-slate-100 dark:bg-slate-850 p-2.5 flex items-center justify-between gap-3 text-[10px] border-b border-slate-200 dark:border-slate-800 font-bold">
-                        <div className="flex items-center gap-2">
-                          <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-500 rounded">
-                            {t('closedPage')}
-                          </span>
-                          <span>{ledger.startDate} - {ledger.endDate} {ledger.endTime}</span>
+                      <div
+                        key={ledger.id}
+                        className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-slate-50 dark:bg-slate-850/10"
+                      >
+                        {/* Header bar */}
+                        <div className="bg-slate-100 dark:bg-slate-850 p-2.5 flex items-center justify-between gap-3 text-[10px] border-b border-slate-200 dark:border-slate-800 font-bold">
+                          <div className="flex items-center gap-2">
+                            <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-500 rounded">
+                              {t('closedPage')}
+                            </span>
+                            <span>{ledger.startDate} - {ledger.endDate} {ledger.endTime}</span>
+                          </div>
+                          <div>
+                            <span>{t('totalCoconuts')}: {(financials.purchasedCoconuts + financials.huskedCoconuts).toLocaleString()}</span>
+                          </div>
                         </div>
-                        <div>
-                          <span>{t('totalCoconuts')}: {(financials.purchasedCoconuts + financials.huskedCoconuts).toLocaleString()}</span>
-                        </div>
-                      </div>
 
-                      {/* Summary row */}
-                      <div className="p-3 grid grid-cols-4 gap-2 text-center border-b border-slate-200 dark:border-slate-800">
-                        <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
-                          <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('coconutsCollected')}</span>
-                          <span className="text-xs font-extrabold text-rose-500">{financials.purchasedCoconuts.toLocaleString()}</span>
-                          <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">{formatCurrency(financials.purchaseAmount)}</span>
+                        {/* Summary row */}
+                        <div className="p-3 grid grid-cols-4 gap-2 text-center border-b border-slate-200 dark:border-slate-800">
+                          <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
+                            <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('coconutsCollected')}</span>
+                            <span className="text-xs font-extrabold text-rose-500">{financials.purchasedCoconuts.toLocaleString()}</span>
+                            <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">{formatCurrency(financials.purchaseAmount)}</span>
+                          </div>
+                          <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
+                            <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('coconutsSold')}</span>
+                            <span className="text-xs font-extrabold text-emerald-500">{financials.soldCoconuts.toLocaleString()}</span>
+                            <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">{formatCurrency(financials.saleAmount)}</span>
+                          </div>
+                          <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
+                            <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('huskedStocks')}</span>
+                            <span className="text-xs font-extrabold text-teal-600 dark:text-emerald-400">{financials.huskedCoconuts.toLocaleString()}</span>
+                            <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">Labor {formatCurrency(financials.huskingLabor)}</span>
+                          </div>
+                          <div className="p-1.5 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20 flex flex-col justify-center">
+                            <span className="block text-[8px] font-bold uppercase opacity-85">{t('archivedProfit')}</span>
+                            <span className="text-xs font-black">{formatCurrency(financials.netProfit)}</span>
+                          </div>
                         </div>
-                        <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
-                          <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('coconutsSold')}</span>
-                          <span className="text-xs font-extrabold text-emerald-500">{financials.soldCoconuts.toLocaleString()}</span>
-                          <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">{formatCurrency(financials.saleAmount)}</span>
-                        </div>
-                        <div className="p-1.5 bg-white dark:bg-slate-900 rounded border border-slate-100 dark:border-slate-800">
-                          <span className="block text-[8px] font-bold text-slate-455 dark:text-slate-400 uppercase">{t('huskedStocks')}</span>
-                          <span className="text-xs font-extrabold text-teal-600 dark:text-emerald-400">{financials.huskedCoconuts.toLocaleString()}</span>
-                          <span className="block text-[8px] font-bold text-slate-500 dark:text-slate-400">Labor {formatCurrency(financials.huskingLabor)}</span>
-                        </div>
-                        <div className="p-1.5 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20 flex flex-col justify-center">
-                          <span className="block text-[8px] font-bold uppercase opacity-85">{t('archivedProfit')}</span>
-                          <span className="text-xs font-black">{formatCurrency(financials.netProfit)}</span>
-                        </div>
-                      </div>
 
-                      <div className="border-b border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-                        <div className="mb-2 flex items-center justify-between text-[10px] font-black uppercase tracking-wide">
-                          <span className="text-slate-400">{text('Delayed P&L', 'ප්‍රමාද ලාභ/වියදම්')}</span>
-                          <span className={financials.delayedIncome - financials.delayedExpense >= 0 ? 'text-emerald-500' : 'text-rose-500'}>
-                            {formatCurrency(financials.delayedIncome - financials.delayedExpense)}
-                          </span>
+                        <div className="border-b border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                          <div className="mb-2 flex items-center justify-between text-[10px] font-black uppercase tracking-wide">
+                            <span className="text-slate-400">{text('Delayed P&L', 'ප්‍රමාද ලාභ/වියදම්')}</span>
+                            <span className={financials.delayedIncome - financials.delayedExpense >= 0 ? 'text-emerald-500' : 'text-rose-500'}>
+                              {formatCurrency(financials.delayedIncome - financials.delayedExpense)}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[110px_1fr_110px_auto]">
+                            <select
+                              value={draft.type}
+                              onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'type', e.target.value)}
+                              className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
+                            >
+                              <option value="income">{t('income')}</option>
+                              <option value="expense">{t('expense')}</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={draft.description}
+                              onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'description', e.target.value)}
+                              placeholder={t('description')}
+                              className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
+                            />
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={draft.amount}
+                              onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'amount', e.target.value)}
+                              placeholder="0.00"
+                              className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleAddArchivedAdjustment(ledger.id)}
+                              className="rounded bg-emerald-500 px-3 py-2 text-xs font-black text-white"
+                            >
+                              {text('Add', 'එකතු')}
+                            </button>
+                          </div>
                         </div>
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[110px_1fr_110px_auto]">
-                          <select
-                            value={draft.type}
-                            onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'type', e.target.value)}
-                            className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
-                          >
-                            <option value="income">{t('income')}</option>
-                            <option value="expense">{t('expense')}</option>
-                          </select>
-                          <input
-                            type="text"
-                            value={draft.description}
-                            onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'description', e.target.value)}
-                            placeholder={t('description')}
-                            className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
-                          />
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={draft.amount}
-                            onChange={(e) => handleArchivedAdjustmentChange(ledger.id, 'amount', e.target.value)}
-                            placeholder="0.00"
-                            className="rounded border border-slate-300 bg-transparent px-2 py-2 text-xs font-bold dark:border-slate-700"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleAddArchivedAdjustment(ledger.id)}
-                            className="rounded bg-emerald-500 px-3 py-2 text-xs font-black text-white"
-                          >
-                            {text('Add', 'එකතු')}
-                          </button>
-                        </div>
-                      </div>
 
-                      {/* Transaction breakdown details */}
-                      <div className="p-3">
-                        <h4 className="text-[9px] font-bold text-slate-400 uppercase mb-1.5">{t('transactionsLog')}:</h4>
-                        <div className="max-h-36 overflow-y-auto space-y-1 border border-slate-200 dark:border-slate-800 rounded p-2 bg-white dark:bg-slate-900">
-                          {ledger.transactions.map((tx) => (
-                            <div key={tx.id} className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-1 text-[11px] border-b border-slate-100 dark:border-slate-850/80 last:border-0 pb-1 pt-1 font-semibold">
-                              <div className="flex flex-col min-w-0">
-                                <div className="flex items-start gap-1.5 text-slate-800 dark:text-slate-200">
-                                  <span className="text-slate-400 font-mono shrink-0 text-[10px]">{tx.time}</span>
-                                  <span className="break-words">{tx.description}</span>
-                                </div>
-                                {(tx.name || tx.phone || tx.billNumber) && (
-                                  <div className="text-[9px] text-slate-400 pl-8 flex flex-wrap gap-x-2 mt-0.5 font-normal">
-                                    {tx.name && <span>{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}: {tx.name}</span>}
-                                    {tx.phone && <span>{t('phone')}: {tx.phone}</span>}
-                                    {tx.billNumber && <span>{t('billNumber')}: {tx.billNumber}</span>}
+                        {/* Transaction breakdown details */}
+                        <div className="p-3">
+                          <h4 className="text-[9px] font-bold text-slate-400 uppercase mb-1.5">{t('transactionsLog')}:</h4>
+                          <div className="max-h-36 overflow-y-auto space-y-1 border border-slate-200 dark:border-slate-800 rounded p-2 bg-white dark:bg-slate-900">
+                            {ledger.transactions.map((tx) => (
+                              <div key={tx.id} className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-1 text-[11px] border-b border-slate-100 dark:border-slate-850/80 last:border-0 pb-1 pt-1 font-semibold">
+                                <div className="flex flex-col min-w-0">
+                                  <div className="flex items-start gap-1.5 text-slate-800 dark:text-slate-200">
+                                    <span className="text-slate-400 font-mono shrink-0 text-[10px]">{tx.time}</span>
+                                    <span className="break-words">{tx.description}</span>
                                   </div>
-                                )}
+                                  {(tx.name || tx.phone || tx.billNumber) && (
+                                    <div className="text-[9px] text-slate-400 pl-8 flex flex-wrap gap-x-2 mt-0.5 font-normal">
+                                      {tx.name && <span>{txAccountType(tx) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}: {tx.name}</span>}
+                                      {tx.phone && <span>{t('phone')}: {tx.phone}</span>}
+                                      {tx.billNumber && <span>{t('billNumber')}: {tx.billNumber}</span>}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex justify-end gap-2 shrink-0 sm:pt-0.5">
+                                  {tx.type === 'purchase' || tx.type === 'daily_cost' ? (
+                                    <span className="text-rose-500 font-bold">- {formatCurrency(tx.netAmount)}</span>
+                                  ) : (
+                                    <span className="text-emerald-500 font-bold">+ {formatCurrency(tx.netAmount)}</span>
+                                  )}
+                                </div>
                               </div>
-                              <div className="flex justify-end gap-2 shrink-0 sm:pt-0.5">
-                                {tx.type === 'purchase' || tx.type === 'daily_cost' ? (
-                                  <span className="text-rose-500 font-bold">- {formatCurrency(tx.netAmount)}</span>
-                                ) : (
-                                  <span className="text-emerald-500 font-bold">+ {formatCurrency(tx.netAmount)}</span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
-                      </div>
 
-                    </div>
+                      </div>
                     );
                   })
                 )}
@@ -4100,114 +5134,8 @@ export default function App() {
 
       {/* -------------------- PRINTABLE INVOICE / RECEIPT OVERLAY -------------------- */}
       {currentPrintBill && !statementPrintType && (
-        <div ref={receiptRef} className="hidden print:block print-receipt-container text-black bg-white" style={{ fontFamily: 'monospace' }}>
-          
-          <div className="receipt-header text-center mb-6">
-            <h2 className="receipt-business-title font-bold uppercase">{receiptBusinessTitle}</h2>
-            {receiptAddress && <p className="receipt-business-line">{receiptAddress}</p>}
-            {receiptPhones.length > 0 && (
-              <p className="receipt-business-line">Tel: {receiptPhones.join(' / ')}</p>
-            )}
-            <div className="border-b border-dashed border-black my-2"></div>
-            <h3 className="text-xs font-bold tracking-widest uppercase">
-              {currentPrintBill.type === 'credit_settlement'
-                ? text('Debt Settlement', 'ණය අඩු කිරීම').toUpperCase()
-                : currentPrintBill.type === 'purchase' ? t('purchase').toUpperCase() : t('sale').toUpperCase()}
-            </h3>
-          </div>
-
-          <div className="text-xs space-y-1">
-            <div className="flex justify-between">
-              <span>Date/Time:</span>
-              <span>{currentPrintBill.date} {currentPrintBill.time}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Ref ID:</span>
-              <span>{currentPrintBill.id}</span>
-            </div>
-            {currentPrintBill.billNumber && (
-              <div className="flex justify-between font-bold">
-                <span>{t('billNumber')}:</span>
-                <span>{currentPrintBill.billNumber}</span>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span>Type:</span>
-              <span className="font-bold uppercase">{txAccountType(currentPrintBill)}</span>
-            </div>
-            {currentPrintBill.name && (
-              <div className="flex justify-between font-bold">
-                <span>{txAccountType(currentPrintBill) === 'purchase' ? t('nameSupplier') : t('nameCustomer')}:</span>
-                <span className="uppercase">{currentPrintBill.name}</span>
-              </div>
-            )}
-            {currentPrintBill.phone && (
-              <div className="flex justify-between">
-                <span>{t('phone')}:</span>
-                <span>{currentPrintBill.phone}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="border-b border-dashed border-black my-3"></div>
-
-          {/* Details Table */}
-          <div className="receipt-details text-xs space-y-1">
-            {currentPrintBill.qty > 0 && (
-              <>
-                <div className="receipt-item-row">
-                  <div className="receipt-item-name flex justify-between font-bold">
-                    <span>{currentPrintBill.itemDescription || 'Coconut / පොල්'}</span>
-                    <span>{formatCurrency(currentPrintBill.qty * currentPrintBill.price)}</span>
-                  </div>
-                  <div className="receipt-item-meta flex justify-between">
-                    <span>{currentPrintBill.qty.toLocaleString()} {currentPrintBill.itemUnit || 'kg'}</span>
-                    <span>@ {formatCurrency(currentPrintBill.price)}</span>
-                  </div>
-                </div>
-
-                <div className="border-b border-dashed border-black/30 my-2"></div>
-                
-                <div className="flex justify-between font-semibold">
-                  <span>{t('grossTotal')}:</span>
-                  <span>{formatCurrency(currentPrintBill.qty * currentPrintBill.price)}</span>
-                </div>
-              </>
-            )}
-
-            {currentPrintBill.adjustment > 0 && (
-              <div className="flex justify-between text-[11px]">
-                <span>
-                  {currentPrintBill.adjustmentType === 'add' ? t('addPrevBalance') : t('subAdvance')}
-                </span>
-                <span>{formatCurrency(currentPrintBill.adjustment)}</span>
-              </div>
-            )}
-
-            {getSettlement(currentPrintBill) > 0 && (
-              <div className="flex justify-between text-[11px] font-bold">
-                <span>{text('Debt Settlement', 'ණය අඩු කිරීම')}</span>
-                <span>{formatCurrency(getSettlement(currentPrintBill))}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="border-b border-dashed border-black my-3"></div>
-
-          {/* Net Due */}
-          <div className="receipt-net-total flex justify-between font-black">
-            <span>{text('NET TOTAL', 'ශුද්ධ එකතුව')}:</span>
-            <span>{formatCurrency(currentPrintBill.type === 'credit_settlement' ? getSettlement(currentPrintBill) : currentPrintBill.netAmount)}</span>
-          </div>
-
-          <div className="border-b border-dashed border-black my-4"></div>
-
-          {receiptFooterMessage && (
-            <div className="receipt-footer text-center mt-6">
-              <p>{receiptFooterMessage}</p>
-            </div>
-          )}
-
+        <div ref={receiptRef} className="hidden print:block print-receipt-container text-black bg-white">
+          {renderReceiptContent()}
         </div>
       )}
     </>

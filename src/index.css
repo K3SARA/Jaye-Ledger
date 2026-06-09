@@ -19,12 +19,66 @@
   --color-slate-850: #172033;
 }
 
+:root {
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+}
+
 @layer base {
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
   body {
     font-family: 'Inter', sans-serif;
+    margin: 0;
+    overflow-x: hidden;
   }
-  h1, h2, h3, h4, h5, h6 {
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     font-family: 'Outfit', sans-serif;
+  }
+}
+
+.app-shell {
+  min-height: 100dvh;
+  padding-left: var(--app-safe-left);
+  padding-right: var(--app-safe-right);
+}
+
+.safe-notification {
+  top: max(0.75rem, var(--app-safe-top)) !important;
+  left: max(0.75rem, var(--app-safe-left)) !important;
+  right: max(0.75rem, var(--app-safe-right)) !important;
+}
+
+.safe-sticky-top {
+  top: var(--app-safe-top) !important;
+}
+
+.safe-modal-overlay,
+.receipt-preview-overlay {
+  padding-top: max(0.75rem, var(--app-safe-top)) !important;
+  padding-right: max(0.75rem, var(--app-safe-right)) !important;
+  padding-bottom: max(0.75rem, var(--app-safe-bottom)) !important;
+  padding-left: max(0.75rem, var(--app-safe-left)) !important;
+}
+
+@media (min-width: 640px) {
+  .safe-notification {
+    top: max(1rem, var(--app-safe-top)) !important;
+    right: max(1rem, var(--app-safe-right)) !important;
+    left: auto !important;
   }
 }
 
@@ -96,8 +150,8 @@
 
 @media (max-width: 767px) {
   .mobile-calc-screen {
-    height: 100svh;
-    max-height: 100svh;
+    height: calc(100svh - 1rem - var(--app-safe-top) - var(--app-safe-bottom));
+    max-height: calc(100svh - 1rem - var(--app-safe-top) - var(--app-safe-bottom));
   }
 
   .mobile-calc-keypad {
@@ -119,8 +173,8 @@
 @supports not (height: 100svh) {
   @media (max-width: 767px) {
     .mobile-calc-screen {
-      height: 100vh;
-      max-height: 100vh;
+      height: calc(100vh - 1rem - var(--app-safe-top) - var(--app-safe-bottom));
+      max-height: calc(100vh - 1rem - var(--app-safe-top) - var(--app-safe-bottom));
     }
   }
 }
@@ -132,10 +186,10 @@
   padding: 3mm 0 5mm;
   color: black;
   background: white;
-  font-family: "Courier New", Courier, monospace;
-  font-size: 10px;
+  font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", Arial, sans-serif;
+  font-size: 14px;
   font-weight: 400;
-  line-height: 1.25;
+  line-height: 1.28;
   letter-spacing: 0;
 }
 
@@ -153,7 +207,7 @@
 }
 
 .receipt-preview-paper h3 {
-  font-size: 10px !important;
+  font-size: 14px !important;
   line-height: 1.2 !important;
   margin: 0 !important;
 }
@@ -181,7 +235,7 @@
   margin-top: 4mm !important;
 }
 
-.receipt-preview-paper .space-y-1 > :not([hidden]) ~ :not([hidden]) {
+.receipt-preview-paper .space-y-1> :not([hidden])~ :not([hidden]) {
   margin-top: 1.1mm !important;
 }
 
@@ -193,15 +247,15 @@
   width: 100% !important;
 }
 
-.receipt-preview-paper .flex.justify-between > :first-child {
+.receipt-preview-paper .flex.justify-between> :first-child {
   min-width: 0 !important;
   overflow-wrap: anywhere !important;
   word-break: normal !important;
 }
 
-.receipt-preview-paper .flex.justify-between > :last-child {
+.receipt-preview-paper .flex.justify-between> :last-child {
   min-width: 0 !important;
-  max-width: 34mm !important;
+  max-width: 45mm !important;
   text-align: right !important;
   white-space: nowrap !important;
   overflow-wrap: normal !important;
@@ -216,17 +270,17 @@
 .receipt-preview-paper .text-xs,
 .receipt-preview-paper .text-\[11px\],
 .receipt-preview-paper .text-\[10px\] {
-  font-size: 10px !important;
+  font-size: 13px !important;
 }
 
 .receipt-preview-paper .receipt-business-title {
-  font-size: 15px !important;
+  font-size: 16px !important;
   line-height: 1.15 !important;
   overflow-wrap: anywhere !important;
 }
 
 .receipt-preview-paper .receipt-business-line {
-  font-size: 11px !important;
+  font-size: 12.5px !important;
   line-height: 1.25 !important;
   font-weight: 700 !important;
   overflow-wrap: anywhere !important;
@@ -234,7 +288,7 @@
 
 .receipt-preview-paper .receipt-item-name,
 .receipt-preview-paper .receipt-item-meta {
-  font-size: 13px !important;
+  font-size: 14px !important;
   line-height: 1.25 !important;
 }
 
@@ -245,18 +299,18 @@
   padding: 2mm 0 !important;
   border-top: 2px solid black !important;
   border-bottom: 2px solid black !important;
-  font-size: 15px !important;
+  font-size: 16px !important;
   line-height: 1.2 !important;
 }
 
-.receipt-preview-paper .receipt-net-total.flex.justify-between > :last-child {
+.receipt-preview-paper .receipt-net-total.flex.justify-between> :last-child {
   max-width: none !important;
   font-size: 20px !important;
   font-weight: 900 !important;
 }
 
 .receipt-preview-paper .receipt-footer {
-  font-size: 12px !important;
+  font-size: 13px !important;
   line-height: 1.25 !important;
   font-weight: 700 !important;
   overflow-wrap: anywhere !important;
@@ -277,10 +331,10 @@
   padding: 3mm 0 5mm !important;
   background: white !important;
   color: black !important;
-  font-family: "Courier New", Courier, monospace !important;
-  font-size: 10px !important;
+  font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", Arial, sans-serif !important;
+  font-size: 14px !important;
   font-weight: 400 !important;
-  line-height: 1.25 !important;
+  line-height: 1.28 !important;
   letter-spacing: 0 !important;
   box-shadow: none !important;
   border: none !important;
@@ -296,13 +350,13 @@
 }
 
 .print-receipt-container.receipt-measuring h2 {
-  font-size: 13px !important;
+  font-size: 16px !important;
   line-height: 1.15 !important;
   margin: 0 !important;
 }
 
 .print-receipt-container.receipt-measuring h3 {
-  font-size: 10px !important;
+  font-size: 14px !important;
   line-height: 1.2 !important;
   margin: 0 !important;
 }
@@ -330,7 +384,7 @@
   margin-top: 4mm !important;
 }
 
-.print-receipt-container.receipt-measuring .space-y-1 > :not([hidden]) ~ :not([hidden]) {
+.print-receipt-container.receipt-measuring .space-y-1> :not([hidden])~ :not([hidden]) {
   margin-top: 1.1mm !important;
 }
 
@@ -342,15 +396,15 @@
   width: 100% !important;
 }
 
-.print-receipt-container.receipt-measuring .flex.justify-between > :first-child {
+.print-receipt-container.receipt-measuring .flex.justify-between> :first-child {
   min-width: 0 !important;
   overflow-wrap: anywhere !important;
   word-break: normal !important;
 }
 
-.print-receipt-container.receipt-measuring .flex.justify-between > :last-child {
+.print-receipt-container.receipt-measuring .flex.justify-between> :last-child {
   min-width: 0 !important;
-  max-width: 34mm !important;
+  max-width: 45mm !important;
   text-align: right !important;
   white-space: nowrap !important;
   overflow-wrap: normal !important;
@@ -363,27 +417,27 @@
 }
 
 .print-receipt-container.receipt-measuring .text-sm {
-  font-size: 11px !important;
+  font-size: 13px !important;
 }
 
 .print-receipt-container.receipt-measuring .text-xs,
 .print-receipt-container.receipt-measuring .text-\[11px\],
 .print-receipt-container.receipt-measuring .text-\[10px\] {
-  font-size: 10px !important;
+  font-size: 13px !important;
 }
 
 .print-receipt-container.receipt-measuring .text-\[8px\] {
-  font-size: 8px !important;
+  font-size: 11px !important;
 }
 
 .print-receipt-container.receipt-measuring .receipt-business-title {
-  font-size: 15px !important;
+  font-size: 16px !important;
   line-height: 1.15 !important;
   overflow-wrap: anywhere !important;
 }
 
 .print-receipt-container.receipt-measuring .receipt-business-line {
-  font-size: 11px !important;
+  font-size: 12.5px !important;
   line-height: 1.25 !important;
   font-weight: 700 !important;
   overflow-wrap: anywhere !important;
@@ -395,7 +449,7 @@
 
 .print-receipt-container.receipt-measuring .receipt-item-name,
 .print-receipt-container.receipt-measuring .receipt-item-meta {
-  font-size: 13px !important;
+  font-size: 14px !important;
   line-height: 1.25 !important;
 }
 
@@ -410,18 +464,18 @@
   padding: 2mm 0 !important;
   border-top: 2px solid black !important;
   border-bottom: 2px solid black !important;
-  font-size: 15px !important;
+  font-size: 16px !important;
   line-height: 1.2 !important;
 }
 
-.print-receipt-container.receipt-measuring .receipt-net-total.flex.justify-between > :last-child {
+.print-receipt-container.receipt-measuring .receipt-net-total.flex.justify-between> :last-child {
   max-width: none !important;
   font-size: 20px !important;
   font-weight: 900 !important;
 }
 
 .print-receipt-container.receipt-measuring .receipt-footer {
-  font-size: 12px !important;
+  font-size: 13px !important;
   line-height: 1.25 !important;
   font-weight: 700 !important;
   overflow-wrap: anywhere !important;
@@ -437,8 +491,9 @@
   * {
     box-sizing: border-box !important;
   }
-  
-  html, body {
+
+  html,
+  body {
     background-color: white !important;
     color: black !important;
     margin: 0 !important;
@@ -461,15 +516,15 @@
     padding: 0 !important;
     overflow: visible !important;
   }
-  
-  #root > div:first-child {
+
+  #root>div:first-child {
     display: none !important;
   }
 
   .receipt-preview-overlay {
     display: none !important;
   }
-  
+
   .print-receipt-container {
     display: block !important;
     position: static !important;
@@ -484,10 +539,10 @@
     border: none !important;
     background: white !important;
     color: black !important;
-    font-family: "Courier New", Courier, monospace !important;
-    font-size: 10px !important;
+    font-family: "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", Arial, sans-serif !important;
+    font-size: 14px !important;
     font-weight: 400 !important;
-    line-height: 1.25 !important;
+    line-height: 1.28 !important;
     letter-spacing: 0 !important;
     overflow: visible !important;
     page-break-after: avoid !important;
@@ -503,13 +558,13 @@
   }
 
   .print-receipt-container h2 {
-    font-size: 13px !important;
+    font-size: 16px !important;
     line-height: 1.15 !important;
     margin: 0 !important;
   }
 
   .print-receipt-container h3 {
-    font-size: 10px !important;
+    font-size: 14px !important;
     line-height: 1.2 !important;
     margin: 0 !important;
   }
@@ -537,7 +592,7 @@
     margin-top: 4mm !important;
   }
 
-  .print-receipt-container .space-y-1 > :not([hidden]) ~ :not([hidden]) {
+  .print-receipt-container .space-y-1> :not([hidden])~ :not([hidden]) {
     margin-top: 1.1mm !important;
   }
 
@@ -550,15 +605,15 @@
     break-inside: avoid !important;
   }
 
-  .print-receipt-container .flex.justify-between > :first-child {
+  .print-receipt-container .flex.justify-between> :first-child {
     min-width: 0 !important;
     overflow-wrap: anywhere !important;
     word-break: normal !important;
   }
 
-  .print-receipt-container .flex.justify-between > :last-child {
+  .print-receipt-container .flex.justify-between> :last-child {
     min-width: 0 !important;
-    max-width: 34mm !important;
+    max-width: 45mm !important;
     text-align: right !important;
     white-space: nowrap !important;
     overflow-wrap: normal !important;
@@ -575,27 +630,27 @@
   }
 
   .print-receipt-container .text-sm {
-    font-size: 11px !important;
+    font-size: 13px !important;
   }
 
   .print-receipt-container .text-xs,
   .print-receipt-container .text-\[11px\],
   .print-receipt-container .text-\[10px\] {
-    font-size: 10px !important;
+    font-size: 13px !important;
   }
 
   .print-receipt-container .text-\[8px\] {
-    font-size: 8px !important;
+    font-size: 11px !important;
   }
 
   .print-receipt-container .receipt-business-title {
-    font-size: 15px !important;
+    font-size: 16px !important;
     line-height: 1.15 !important;
     overflow-wrap: anywhere !important;
   }
 
   .print-receipt-container .receipt-business-line {
-    font-size: 11px !important;
+    font-size: 12.5px !important;
     line-height: 1.25 !important;
     font-weight: 700 !important;
     overflow-wrap: anywhere !important;
@@ -607,7 +662,7 @@
 
   .print-receipt-container .receipt-item-name,
   .print-receipt-container .receipt-item-meta {
-    font-size: 13px !important;
+    font-size: 14px !important;
     line-height: 1.25 !important;
   }
 
@@ -622,18 +677,18 @@
     padding: 2mm 0 !important;
     border-top: 2px solid black !important;
     border-bottom: 2px solid black !important;
-    font-size: 15px !important;
+    font-size: 16px !important;
     line-height: 1.2 !important;
   }
 
-  .print-receipt-container .receipt-net-total.flex.justify-between > :last-child {
+  .print-receipt-container .receipt-net-total.flex.justify-between> :last-child {
     max-width: none !important;
     font-size: 20px !important;
     font-weight: 900 !important;
   }
 
   .print-receipt-container .receipt-footer {
-    font-size: 12px !important;
+    font-size: 13px !important;
     line-height: 1.25 !important;
     font-weight: 700 !important;
     overflow-wrap: anywhere !important;
@@ -657,13 +712,16 @@
   width: 8px;
   height: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: rgba(16, 185, 129, 0.2);
   border-radius: 8px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(16, 185, 129, 0.4);
 }
