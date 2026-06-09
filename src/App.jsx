@@ -346,7 +346,8 @@ const RECEIPT_LABELS = {
   grossTotal: 'මුළු එකතුව',
   netTotal: 'ශුද්ධ එකතුව',
   previousBalance: 'කලින් හිඟය',
-  advance: 'අත්තිකාරම්'
+  advance: 'අත්තිකාරම්',
+  remainingBalance: 'ඉතිරි හිඟය'
 };
 
 const getReceiptTitle = (bill) => `receipt-${bill?.billNumber || bill?.id || 'bill'}`;
@@ -994,6 +995,25 @@ export default function App() {
       .reduce((sum, tx) => sum + getCreditDelta(tx), 0);
   };
 
+  // Get outstanding balance for a customer/supplier name before a specific transaction (for history logs)
+  const getOutstandingBeforeTransaction = (name, type, txId) => {
+    if (!name) return 0;
+    const targetName = name.trim().toLowerCase();
+    const allLedgersChronological = [...archivedLedgers].reverse().concat(activeLedger);
+    const transactions = allLedgersChronological.flatMap(l => l.transactions || []);
+    
+    const relevantTx = transactions.filter(
+      tx => tx.name && tx.name.trim().toLowerCase() === targetName && txAccountType(tx) === type
+    );
+    const targetIndex = relevantTx.findIndex(tx => tx.id === txId);
+    
+    if (targetIndex === -1) {
+      return getCustomerOutstanding(name, type);
+    }
+    
+    return relevantTx.slice(0, targetIndex).reduce((sum, tx) => sum + getCreditDelta(tx), 0);
+  };
+
   // Get unique names of customer/supplier for autocomplete dropdown suggestions
   const getUniqueNames = (type) => {
     const names = new Set();
@@ -1145,6 +1165,35 @@ export default function App() {
     push(receiptSeparator(receiptColumns));
     pushKeyValue(`${RECEIPT_LABELS.netTotal}:`, formatCurrency(netTotal));
     push(receiptSeparator(receiptColumns));
+
+    if (bill.name) {
+      const receiptPrevBal = bill.previousBalance !== undefined 
+        ? bill.previousBalance 
+        : getOutstandingBeforeTransaction(bill.name, txAccountType(bill), bill.id);
+
+      const receiptDelta = typeof bill.creditDelta === 'number' 
+        ? bill.creditDelta 
+        : getCreditDelta(bill);
+
+      const receiptRemBal = bill.remainingBalance !== undefined 
+        ? bill.remainingBalance 
+        : receiptPrevBal + receiptDelta;
+
+      const partyType = txAccountType(bill);
+      const prevLabelSuffix = receiptPrevBal > 0.009 
+        ? (partyType === 'purchase' ? ' (ගෙවිය යුතු)' : ' (ලැබිය යුතු)') 
+        : receiptPrevBal < -0.009 ? ' (අත්තිකාරම්)' : '';
+      const remLabelSuffix = receiptRemBal > 0.009 
+        ? (partyType === 'purchase' ? ' (ගෙවිය යුතු)' : ' (ලැබිය යුතු)') 
+        : receiptRemBal < -0.009 ? ' (අත්තිකාරම්)' : '';
+
+      pushCenter(partyType === 'purchase' ? 'ගිණුම් සාරාංශය (Supplier Summary)' : 'ගิණුම් සාරාංශය (Customer Summary)');
+      pushKeyValue('කලින් හිඟය (Prev Balance):', `${formatCurrency(Math.abs(receiptPrevBal))}${prevLabelSuffix}`);
+      pushKeyValue('මෙම ගෙවීම/ගනුදෙනුව (This Tx):', `${receiptDelta < 0 ? '-' : '+'} ${formatCurrency(Math.abs(receiptDelta))}`);
+      pushKeyValue('ඉතිරි හිඟය (Remaining):', `${formatCurrency(Math.abs(receiptRemBal))}${remLabelSuffix}`);
+      push(receiptSeparator(receiptColumns));
+    }
+
     if (receiptFooterMessage) {
       push('');
       pushCenter(receiptFooterMessage);
@@ -1527,6 +1576,11 @@ export default function App() {
     const transactionId = createId('tx');
     const enteredBillNumber = formatBillNumber(posBill.billNumber);
     const normalizedBillNumber = featureSettings.billNumber ? (enteredBillNumber || getNextBillNumber()) : '';
+
+    const prevBal = posBill.name ? getCustomerOutstanding(posBill.name, posBill.type) : 0;
+    const calculatedCreditDelta = isPayment ? -actualSettlement : posNet - actualSettlement - posAdjustment;
+    const remBal = prevBal + calculatedCreditDelta;
+
     const newTransaction = {
       id: transactionId,
       time: formatLocalTime(),
@@ -1542,7 +1596,7 @@ export default function App() {
       adjustmentType: featureSettings.adjustments ? 'subtract' : 'none',
       netAmount: isPayment ? 0 : posNet,
       settlementAmount: actualSettlement,
-      creditDelta: isPayment ? -actualSettlement : posNet - actualSettlement - posAdjustment,
+      creditDelta: calculatedCreditDelta,
       committed: true,
       name: posBill.name ? posBill.name.trim() : '',
       phone: featureSettings.phone && posBill.phone ? posBill.phone.trim() : '',
@@ -1551,7 +1605,9 @@ export default function App() {
         ? (posBill.type === 'purchase' ? t('paymentMade') : t('paymentReceived'))
         : (posBill.type === 'purchase'
           ? `${posItemDescription} - ${t('supplierSupply')}${normalizedBillNumber ? ` (${normalizedBillNumber})` : ''}`
-          : `${posItemDescription} - ${t('customerPurchase')}${normalizedBillNumber ? ` (${normalizedBillNumber})` : ''}`)
+          : `${posItemDescription} - ${t('customerPurchase')}${normalizedBillNumber ? ` (${normalizedBillNumber})` : ''}`),
+      previousBalance: prevBal,
+      remainingBalance: remBal
     };
 
     // Update active ledger
@@ -2041,6 +2097,9 @@ export default function App() {
       delta = loanFormType === 'sale' ? -amount : amount;
     }
 
+    const prevBal = getCustomerOutstanding(name, loanFormType);
+    const remBal = prevBal + delta;
+
     const transactionId = createId('tx');
     const newTransaction = {
       id: transactionId,
@@ -2063,7 +2122,9 @@ export default function App() {
         loanFormAction === 'give'
           ? (loanFormType === 'sale' ? text('Loan Advance Given', 'ණය / අත්තිකාරම් මුදල් ලබාදීම') : text('Advance Paid to Supplier', 'සැපයුම්කරුට අත්තිකාරම් ගෙවීම'))
           : (loanFormType === 'sale' ? text('Loan Cash Received', 'ණය මුදල් ලැබීම / පියවීම') : text('Cash Refund from Supplier', 'සැපයුම්කරුගෙන් මුදල් ලැබීම'))
-      )
+      ),
+      previousBalance: prevBal,
+      remainingBalance: remBal
     };
 
     setActiveLedger(prev => ({
@@ -2883,6 +2944,53 @@ export default function App() {
           <span>{RECEIPT_LABELS.netTotal}:</span>
           <span>{formatCurrency(currentPrintBill.type === 'credit_settlement' ? getSettlement(currentPrintBill) : currentPrintBill.netAmount)}</span>
         </div>
+
+        {currentPrintBill.name && (() => {
+          const receiptPrevBal = currentPrintBill.previousBalance !== undefined 
+            ? currentPrintBill.previousBalance 
+            : getOutstandingBeforeTransaction(currentPrintBill.name, txAccountType(currentPrintBill), currentPrintBill.id);
+
+          const receiptDelta = typeof currentPrintBill.creditDelta === 'number' 
+            ? currentPrintBill.creditDelta 
+            : getCreditDelta(currentPrintBill);
+
+          const receiptRemBal = currentPrintBill.remainingBalance !== undefined 
+            ? currentPrintBill.remainingBalance 
+            : receiptPrevBal + receiptDelta;
+
+          const partyType = txAccountType(currentPrintBill);
+          const prevLabelSuffix = receiptPrevBal > 0.009 
+            ? (partyType === 'purchase' ? ' (ගෙවිය යුතු)' : ' (ලැබිය යුතු)') 
+            : receiptPrevBal < -0.009 ? ' (අත්තිකාරම්)' : '';
+          const remLabelSuffix = receiptRemBal > 0.009 
+            ? (partyType === 'purchase' ? ' (ගෙවිය යුතු)' : ' (ලැබිය යුතු)') 
+            : receiptRemBal < -0.009 ? ' (අත්තිකාරම්)' : '';
+
+          return (
+            <>
+              <div className="border-b border-dashed border-black my-3"></div>
+              <div className="receipt-ledger-summary text-[11px] space-y-1 bg-slate-50 p-2 rounded">
+                <div className="font-bold text-center mb-1 text-[10px] uppercase tracking-wider text-slate-600">
+                  {partyType === 'purchase' ? 'ගිණුම් සාරාංශය (Supplier Summary)' : 'ගිණුම් සාරාංශය (Customer Summary)'}
+                </div>
+                <div className="flex justify-between">
+                  <span>කලින් හිඟය (Prev Balance):</span>
+                  <span>{formatCurrency(Math.abs(receiptPrevBal))}{prevLabelSuffix}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>මෙම ගෙවීම/ගනුදෙනුව (This Tx):</span>
+                  <span className={receiptDelta < 0 ? 'text-emerald-700 font-bold' : 'text-amber-700 font-bold'}>
+                    {receiptDelta < 0 ? '-' : '+'} {formatCurrency(Math.abs(receiptDelta))}
+                  </span>
+                </div>
+                <div className="flex justify-between font-bold border-t border-dashed border-black/20 pt-1 text-xs">
+                  <span>{RECEIPT_LABELS.remainingBalance || 'ඉතිරි හිඟය'} (Remaining):</span>
+                  <span>{formatCurrency(Math.abs(receiptRemBal))}{remLabelSuffix}</span>
+                </div>
+              </div>
+            </>
+          );
+        })()}
 
         <div className="border-b border-dashed border-black my-4"></div>
 
