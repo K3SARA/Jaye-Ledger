@@ -1030,7 +1030,7 @@ export default function App() {
 
   const outstanding = getCustomerOutstanding(posBill.name, posBill.type);
   const remainingOutstanding = posBill.name
-    ? outstanding + (isPaymentOnly ? -posSettlementAmount : posNet - posSettlementAmount - posAdjustment)
+    ? outstanding + (isPaymentOnly ? -posSettlementAmount : posNet - posSettlementAmount)
     : 0;
 
   const partyBalances = getUniqueNames('sale').map(name => ({
@@ -1578,7 +1578,7 @@ export default function App() {
     const normalizedBillNumber = featureSettings.billNumber ? (enteredBillNumber || getNextBillNumber()) : '';
 
     const prevBal = posBill.name ? getCustomerOutstanding(posBill.name, posBill.type) : 0;
-    const calculatedCreditDelta = isPayment ? -actualSettlement : posNet - actualSettlement - posAdjustment;
+    const calculatedCreditDelta = isPayment ? -actualSettlement : posNet - actualSettlement;
     const remBal = prevBal + calculatedCreditDelta;
 
     const newTransaction = {
@@ -1904,11 +1904,12 @@ export default function App() {
           adjustmentType: featureSettings.adjustments ? editTxForm.adjustmentType : 'none',
           settlementAmount,
           netAmount,
-          creditDelta: isPayment ? -settlementAmount : netAmount - settlementAmount - adjustment,
+          creditDelta: isPayment ? -settlementAmount : netAmount - settlementAmount,
           name: editTxForm.name.trim(),
           phone: featureSettings.phone ? editTxForm.phone.trim() : '',
           billNumber: featureSettings.billNumber ? formatBillNumber(editTxForm.billNumber) : '',
-          description: editTxForm.description.trim() || tx.description
+          description: editTxForm.description.trim() || tx.description,
+          remainingBalance: tx.previousBalance !== undefined ? tx.previousBalance + (isPayment ? -settlementAmount : netAmount - settlementAmount) : tx.remainingBalance
         };
       })
     }));
